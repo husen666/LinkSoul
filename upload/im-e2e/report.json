@@ -1,0 +1,23 @@
+{
+  "steps": [
+    {
+      "name": "home",
+      "url": "http://localhost:8081/login"
+    },
+    {
+      "name": "auth-attempt",
+      "clicked": null
+    },
+    {
+      "name": "open-conversation",
+      "url": "http://localhost:8081/register"
+    },
+    {
+      "name": "send-text",
+      "message": "e2e text 1771900092",
+      "before": 0,
+      "after": 0
+    }
+  ],
+  "errors": []
+}

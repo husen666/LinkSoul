@@ -1,0 +1,396 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// User & Profile
+// ============================================
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  BANNED
+  DEACTIVATED
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum AttachmentType {
+  SECURE
+  ANXIOUS
+  AVOIDANT
+  FEARFUL
+}
+
+enum CommunicationStyle {
+  DIRECT
+  INDIRECT
+  ANALYTICAL
+  EMOTIONAL
+}
+
+model User {
+  id          String     @id @default(cuid())
+  phone       String?    @unique
+  email       String?    @unique
+  password    String
+  nickname    String
+  avatar      String?
+  gender      Gender?
+  birthDate   DateTime?  @map("birth_date")
+  bio         String?
+  city        String?
+  province    String?
+  role        Role       @default(USER)
+  status      UserStatus @default(ACTIVE)
+  lastLoginAt DateTime?  @map("last_login_at")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  profile          UserProfile?
+  sentMatches      Match[]        @relation("MatchUserA")
+  receivedMatches  Match[]        @relation("MatchUserB")
+  messages         Message[]
+  creditScore      CreditScore?
+  creditLogs       CreditLog[]
+  sentReports      Report[]       @relation("Reporter")
+  receivedReports  Report[]       @relation("Reported")
+  soulSessions     SoulSession[]
+  dynamics         Dynamic[]
+  dynamicLikes     DynamicLike[]
+  dynamicComments  DynamicComment[]
+
+  @@map("users")
+}
+
+model UserProfile {
+  id                 String             @id @default(cuid())
+  userId             String             @unique @map("user_id")
+  attachmentType     AttachmentType?    @map("attachment_type")
+  communicationStyle CommunicationStyle? @map("communication_style")
+  personalityTags    String?            @map("personality_tags")
+  valuesVector       String?            @map("values_vector")
+  aiSummary          String?            @map("ai_summary")
+  testCompleted      Boolean            @default(false) @map("test_completed")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+// ============================================
+// Matching
+// ============================================
+
+enum MatchStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+model Match {
+  id          String      @id @default(cuid())
+  userAId     String      @map("user_a_id")
+  userBId     String      @map("user_b_id")
+  score       Float
+  matchReason String?     @map("match_reason")
+  status      MatchStatus @default(PENDING)
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  userA        User          @relation("MatchUserA", fields: [userAId], references: [id])
+  userB        User          @relation("MatchUserB", fields: [userBId], references: [id])
+  conversation Conversation?
+  relationship Relationship?
+
+  @@unique([userAId, userBId])
+  @@map("matches")
+}
+
+// ============================================
+// Chat / Messaging
+// ============================================
+
+enum ConversationType {
+  AI_PRECHAT
+  DIRECT
+}
+
+enum ConversationStatus {
+  ACTIVE
+  ARCHIVED
+  CLOSED
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  FILE
+  EMOJI
+  VOICE
+  SYSTEM
+  AI_SUGGESTION
+}
+
+model Conversation {
+  id        String             @id @default(cuid())
+  matchId   String             @unique @map("match_id")
+  type      ConversationType   @default(AI_PRECHAT)
+  status    ConversationStatus @default(ACTIVE)
+  createdAt DateTime           @default(now()) @map("created_at")
+  updatedAt DateTime           @updatedAt @map("updated_at")
+
+  match    Match     @relation(fields: [matchId], references: [id])
+  messages Message[]
+
+  @@map("conversations")
+}
+
+model Message {
+  id             String      @id @default(cuid())
+  conversationId String      @map("conversation_id")
+  senderId       String      @map("sender_id")
+  content        String
+  mediaUrl       String?     @map("media_url")
+  fileName       String?     @map("file_name")
+  fileSize       Int?        @map("file_size")
+  mimeType       String?     @map("mime_type")
+  type           MessageType @default(TEXT)
+  aiSuggested    Boolean     @default(false) @map("ai_suggested")
+  readAt         DateTime?   @map("read_at")
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+  sender       User         @relation(fields: [senderId], references: [id])
+
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+// ============================================
+// Relationship Stages
+// ============================================
+
+enum RelationshipStage {
+  INITIAL
+  GETTING_TO_KNOW
+  DATING
+  COMMITTED
+  ENDED
+}
+
+model Relationship {
+  id            String            @id @default(cuid())
+  matchId       String            @unique @map("match_id")
+  stage         RelationshipStage @default(INITIAL)
+  aiAssessment  String?           @map("ai_assessment")
+  progressScore Float?            @map("progress_score")
+  startedAt     DateTime          @default(now()) @map("started_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+
+  match Match @relation(fields: [matchId], references: [id])
+
+  @@map("relationships")
+}
+
+// ============================================
+// Credit System
+// ============================================
+
+enum CreditLevel {
+  BRONZE
+  SILVER
+  GOLD
+  PLATINUM
+}
+
+model CreditScore {
+  id        String      @id @default(cuid())
+  userId    String      @unique @map("user_id")
+  score     Int         @default(0)
+  level     CreditLevel @default(BRONZE)
+  updatedAt DateTime    @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("credit_scores")
+}
+
+model CreditLog {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  actionType  String   @map("action_type")
+  scoreChange Int      @map("score_change")
+  reason      String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@map("credit_logs")
+}
+
+// ============================================
+// Reports
+// ============================================
+
+enum ReportStatus {
+  PENDING
+  REVIEWED
+  RESOLVED
+  DISMISSED
+}
+
+model Report {
+  id         String       @id @default(cuid())
+  reporterId String       @map("reporter_id")
+  reportedId String       @map("reported_id")
+  reason     String
+  detail     String?
+  resolution String?
+  status     ReportStatus @default(PENDING)
+  createdAt  DateTime     @default(now()) @map("created_at")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+
+  reporter User @relation("Reporter", fields: [reporterId], references: [id])
+  reported User @relation("Reported", fields: [reportedId], references: [id])
+
+  @@map("reports")
+}
+
+// ============================================
+// Soul Relief (心灵解脱)
+// ============================================
+
+model SoulSession {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  topic        String   @default("general")
+  title        String?
+  status       String   @default("AI")          // AI | HUMAN | CLOSED
+  adminId      String?  @map("admin_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages SoulMessage[]
+
+  @@index([userId, createdAt])
+  @@map("soul_sessions")
+}
+
+model SoulMessage {
+  id        String   @id @default(cuid())
+  sessionId String   @map("session_id")
+  role      String   @default("user")           // user | ai | admin
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  session SoulSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@map("soul_messages")
+}
+
+// ============================================
+// Admin Audit Log
+// ============================================
+
+model AdminLog {
+  id        String   @id @default(cuid())
+  adminId   String   @map("admin_id")
+  action    String
+  target    String?
+  targetId  String?  @map("target_id")
+  detail    String?
+  ip        String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([adminId, createdAt])
+  @@index([action, createdAt])
+  @@map("admin_logs")
+}
+
+// ============================================
+// Dynamic Feed (脉冲动态)
+// ============================================
+
+model Dynamic {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  type      String   @default("post")     // post | match | test | checkin | system
+  content   String
+  imageUrl  String?  @map("image_url")
+  mood      String?                        // emoji mood tag
+  visibility String  @default("public")    // public | friends | private
+  likes     Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dynamicLikes   DynamicLike[]
+  dynamicComments DynamicComment[]
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@map("dynamics")
+}
+
+model DynamicComment {
+  id        String   @id @default(cuid())
+  dynamicId String   @map("dynamic_id")
+  userId    String   @map("user_id")
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  dynamic Dynamic @relation(fields: [dynamicId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([dynamicId, createdAt])
+  @@map("dynamic_comments")
+}
+
+model DynamicLike {
+  id        String   @id @default(cuid())
+  dynamicId String   @map("dynamic_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  dynamic Dynamic @relation(fields: [dynamicId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([dynamicId, userId])
+  @@map("dynamic_likes")
+}
+
+model OperationalMessage {
+  id        String   @id @default(cuid())
+  title     String
+  content   String
+  category  String   @default("推荐")
+  imageUrl  String?  @map("image_url")
+  linkUrl   String?  @map("link_url")
+  priority  Int      @default(0)
+  status    String   @default("ACTIVE")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("operational_messages")
+}
