@@ -1,6 +1,8 @@
 const BASE = '/api/v1';
 const TIMEOUT_MS = 30_000;
 const ADMIN_KEY = 'admin_user';
+const LOGIN_PATH = `${import.meta.env.BASE_URL}login`;
+const LOGIN_PATHNAME = new URL(LOGIN_PATH, window.location.origin).pathname;
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('admin_token');
@@ -19,8 +21,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
     if (res.status === 401 || res.status === 403) {
       localStorage.removeItem('admin_token');
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login';
+      if (window.location.pathname !== LOGIN_PATHNAME) {
+        window.location.href = LOGIN_PATH;
       }
       const err = await res.json().catch(() => ({}));
       throw new Error(err.message || '未授权，请重新登录');
@@ -76,7 +78,7 @@ export async function getAdminMe() {
 export function logout() {
   localStorage.removeItem('admin_token');
   localStorage.removeItem(ADMIN_KEY);
-  window.location.href = '/login';
+  window.location.href = LOGIN_PATH;
 }
 
 export function isLoggedIn() {
