@@ -8,8 +8,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/backend ./apps/backend
 
 RUN pnpm install --frozen-lockfile
-RUN pnpm --filter @linksoul/backend build
 RUN pnpm --filter @linksoul/backend prisma:generate
+RUN pnpm --filter @linksoul/backend build
 
 EXPOSE 3000
 
