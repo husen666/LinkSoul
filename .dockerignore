@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+dist
+**/dist
+.git
+.cursor
+terminals
+agent-transcripts
+*.log
+coverage
+apps/mobile/.expo
+apps/mobile/.next
+apps/mobile/web-build
