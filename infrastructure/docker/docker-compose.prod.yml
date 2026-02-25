@@ -99,8 +99,7 @@ services:
     container_name: linksoul-nginx-prod
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      - "127.0.0.1:8443:443"
     environment:
       APP_DOMAIN: ${APP_DOMAIN}
       PROJECT_BASE_PATH: ${PROJECT_BASE_PATH:-/linksoul}
