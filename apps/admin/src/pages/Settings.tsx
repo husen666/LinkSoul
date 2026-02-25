@@ -5,27 +5,73 @@ import { useToast } from '../components/Toast';
 import { useConfirm } from '../components/ConfirmDialog';
 import type { SystemInfo, AdminUser } from '../types';
 
+type AvatarPoolConfig = {
+  rawValue: string;
+  perStyle: number;
+  min: number;
+  max: number;
+  styles: string[];
+};
+
+type ManagedDefaultAvatarPool = {
+  count: number;
+  updatedAt: string | null;
+  defaultCount: number;
+  maxCount: number;
+  styleCounts: Record<string, number>;
+  preview: Array<{
+    id: string;
+    style: string;
+    avatar: string;
+  }>;
+};
+
 export function SettingsPage() {
   const [system, setSystem] = useState<SystemInfo | null>(null);
+  const [avatarPool, setAvatarPool] = useState<AvatarPoolConfig | null>(null);
+  const [defaultAvatarPool, setDefaultAvatarPool] = useState<ManagedDefaultAvatarPool | null>(null);
+  const [generateAvatarCount, setGenerateAvatarCount] = useState(1000);
+  const [generatingAvatars, setGeneratingAvatars] = useState(false);
   const [admins, setAdmins] = useState<AdminUser[]>([]);
   const [showAddAdmin, setShowAddAdmin] = useState(false);
   const [showChangePwd, setShowChangePwd] = useState(false);
   const [form, setForm] = useState({ email: '', password: '', nickname: '' });
   const [pwdForm, setPwdForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
   const [saving, setSaving] = useState(false);
+  const [repairing, setRepairing] = useState(false);
   const [serviceStatus, setServiceStatus] = useState<Record<string, string>>({});
+  const [repairSummary, setRepairSummary] = useState<{
+    scope: string;
+    dryRun: boolean;
+    scannedUsers: number;
+    avatarFixed: number;
+    creditScoreCreated: number;
+    creditLevelFixed: number;
+  } | null>(null);
   const [loadError, setLoadError] = useState('');
   const toast = useToast();
   const { confirm } = useConfirm();
 
+  const REPAIR_SCOPE_LABEL: Record<string, string> = {
+    all: '全量修复',
+    avatars: '仅头像',
+    credits: '积分全修复',
+    'credit-create': '仅补积分记录',
+    'credit-levels': '仅等级重算',
+  };
+
   const fetchData = async () => {
     try {
-      const [sys, adminList] = await Promise.all([
+      const [sys, adminList, poolConfig, managedPool] = await Promise.all([
         api.get<SystemInfo>('/admin/system'),
         api.get<AdminUser[]>('/admin/admins'),
+        api.get<AvatarPoolConfig>('/admin/tools/avatar-pool-config'),
+        api.get<ManagedDefaultAvatarPool>('/admin/tools/default-avatars'),
       ]);
       setSystem(sys);
       setAdmins(adminList);
+      setAvatarPool(poolConfig);
+      setDefaultAvatarPool(managedPool);
       setLoadError('');
     } catch (err: unknown) {
       setLoadError(err instanceof Error ? err.message : '加载失败');
@@ -105,6 +151,68 @@ export function SettingsPage() {
     }
   };
 
+  const runRepairData = async (
+    dryRun: boolean,
+    scope: 'all' | 'avatars' | 'credits' | 'credit-create' | 'credit-levels' = 'all',
+  ) => {
+    const scopeText = REPAIR_SCOPE_LABEL[scope] || scope;
+    const ok = await confirm({
+      title: dryRun ? `试运行：${scopeText}` : `执行：${scopeText}`,
+      message: dryRun
+        ? '将扫描并统计需要修复的数据，不会写入数据库。'
+        : '将按所选范围执行数据修复并写入数据库。是否继续？',
+      confirmText: dryRun ? '开始试运行' : '开始修复',
+      variant: dryRun ? 'primary' : 'warning',
+    });
+    if (!ok) return;
+
+    setRepairing(true);
+    try {
+      const result = await api.post<{
+        scope: string;
+        dryRun: boolean;
+        scannedUsers: number;
+        avatarFixed: number;
+        creditScoreCreated: number;
+        creditLevelFixed: number;
+      }>('/admin/tools/repair-data', { scope, dryRun });
+      setRepairSummary(result);
+      toast.success(
+        dryRun
+          ? `试运行完成：头像 ${result.avatarFixed}，补积分 ${result.creditScoreCreated}，重算等级 ${result.creditLevelFixed}`
+          : `修复完成：头像 ${result.avatarFixed}，补积分 ${result.creditScoreCreated}，重算等级 ${result.creditLevelFixed}`,
+      );
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : '修复失败');
+    } finally {
+      setRepairing(false);
+    }
+  };
+
+  const runGenerateDefaultAvatars = async () => {
+    const count = Number(generateAvatarCount) || 1000;
+    const ok = await confirm({
+      title: '生成默认头像池',
+      message: `将随机生成 ${count} 张默认头像并替换当前头像池，是否继续？`,
+      confirmText: '开始生成',
+      variant: 'warning',
+    });
+    if (!ok) return;
+    setGeneratingAvatars(true);
+    try {
+      const result = await api.post<ManagedDefaultAvatarPool>(
+        '/admin/tools/default-avatars/generate',
+        { count },
+      );
+      setDefaultAvatarPool(result);
+      toast.success(`默认头像池已更新，共 ${result.count} 张`);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : '生成失败');
+    } finally {
+      setGeneratingAvatars(false);
+    }
+  };
+
   if (loadError) return (
     <div className="empty">
       <div className="icon">⚠</div>
@@ -124,7 +232,26 @@ export function SettingsPage() {
 
       <div className="grid grid-2" style={{ marginBottom: 24 }}>
         <div className="card">
-          <div className="card-header"><h3>系统信息</h3></div>
+          <div className="card-header">
+            <h3>系统信息</h3>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <button className="btn btn-ghost btn-sm" disabled={repairing} onClick={() => runRepairData(true)}>
+                {repairing ? '处理中...' : '试运行修复'}
+              </button>
+              <button className="btn btn-warning btn-sm" disabled={repairing} onClick={() => runRepairData(false)}>
+                {repairing ? '处理中...' : '执行修复'}
+              </button>
+              <button className="btn btn-ghost btn-sm" disabled={repairing} onClick={() => runRepairData(false, 'avatars')}>
+                仅头像
+              </button>
+              <button className="btn btn-ghost btn-sm" disabled={repairing} onClick={() => runRepairData(false, 'credit-create')}>
+                仅补积分记录
+              </button>
+              <button className="btn btn-ghost btn-sm" disabled={repairing} onClick={() => runRepairData(false, 'credit-levels')}>
+                仅等级重算
+              </button>
+            </div>
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {[
               { l: '系统版本', v: `v${system.version}` },
@@ -140,6 +267,33 @@ export function SettingsPage() {
                 <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{item.v}</span>
               </div>
             ))}
+            {repairSummary && (
+              <div style={{ marginTop: 6, padding: 10, borderRadius: 10, background: 'var(--surface2)', border: '1px solid var(--border)' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>
+                  最近一次{repairSummary.dryRun ? '试运行' : '修复'}结果
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 4 }}>
+                  范围 {REPAIR_SCOPE_LABEL[repairSummary.scope] || repairSummary.scope}，
+                  扫描用户 {repairSummary.scannedUsers}，头像修复 {repairSummary.avatarFixed}，补齐积分 {repairSummary.creditScoreCreated}，等级重算 {repairSummary.creditLevelFixed}
+                </div>
+              </div>
+            )}
+            {avatarPool && (
+              <div style={{ marginTop: 6, padding: 10, borderRadius: 10, background: 'var(--surface2)', border: '1px solid var(--border)' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>
+                  默认头像池配置
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 4 }}>
+                  当前每种样式 {avatarPool.perStyle} 张（范围 {avatarPool.min}~{avatarPool.max}）
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 4 }}>
+                  环境变量 AVATAR_POOL_PER_STYLE={avatarPool.rawValue || '(未设置，使用默认值)'}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 2 }}>
+                  样式：{avatarPool.styles.join(' / ')}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -176,6 +330,49 @@ export function SettingsPage() {
             })}
           </div>
         </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 24 }}>
+        <div className="card-header">
+          <h3>默认头像管理</h3>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={defaultAvatarPool?.maxCount || 5000}
+              value={generateAvatarCount}
+              onChange={e => setGenerateAvatarCount(Number(e.target.value || 1000))}
+              style={{ width: 120, height: 32 }}
+              aria-label="默认头像生成数量"
+            />
+            <button className="btn btn-primary btn-sm" disabled={generatingAvatars} onClick={runGenerateDefaultAvatars}>
+              {generatingAvatars ? '生成中...' : '随机生成头像池'}
+            </button>
+          </div>
+        </div>
+        {defaultAvatarPool ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ fontSize: 12, color: 'var(--text2)' }}>
+              当前池规模 {defaultAvatarPool.count}，默认建议 {defaultAvatarPool.defaultCount}，最大 {defaultAvatarPool.maxCount}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text3)' }}>
+              更新时间：{defaultAvatarPool.updatedAt ? new Date(defaultAvatarPool.updatedAt).toLocaleString('zh-CN') : '-'}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text3)' }}>
+              样式分布：{Object.entries(defaultAvatarPool.styleCounts).map(([k, v]) => `${k} ${v}`).join(' / ')}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(10, 1fr)', gap: 8 }}>
+              {defaultAvatarPool.preview.slice(0, 20).map(item => (
+                <div key={item.id} title={`${item.id} (${item.style})`} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 4, background: 'var(--surface2)' }}>
+                  <img src={item.avatar} alt={item.style} style={{ width: '100%', borderRadius: 6, display: 'block' }} />
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: 'var(--text3)' }}>加载中...</div>
+        )}
       </div>
 
       <div className="card" style={{ marginBottom: 24 }}>

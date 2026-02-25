@@ -30,6 +30,11 @@ export class FeedController {
       mood?: string;
       visibility?: string;
       imageUrl?: string;
+      mediaList?: Array<{ type: 'image' | 'video'; url: string }>;
+      music?: string;
+      location?: string;
+      link?: string;
+      pollOptions?: string[];
     },
   ) {
     return this.feedService.createPost(userId, body);
@@ -42,12 +47,14 @@ export class FeedController {
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
     @Query('mode') mode?: string,
+    @Query('cursor') cursor?: string,
   ) {
     return this.feedService.getFeed(
       userId,
       Number(page) || 1,
       Number(pageSize) || 20,
       mode,
+      cursor,
     );
   }
 
@@ -91,6 +98,22 @@ export class FeedController {
     );
   }
 
+  @Get(':id/comments/page')
+  @ApiOperation({ summary: '获取动态评论（分页对象）' })
+  getCommentsPage(
+    @Param('id') dynamicId: string,
+    @CurrentUser('id') userId: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    return this.feedService.getCommentsPage(
+      dynamicId,
+      userId,
+      Number(page) || 1,
+      Number(pageSize) || 20,
+    );
+  }
+
   @Post(':id/comments')
   @ApiOperation({ summary: '发表评论' })
   addComment(
@@ -99,5 +122,15 @@ export class FeedController {
     @Body() body: { content: string },
   ) {
     return this.feedService.addComment(dynamicId, userId, body.content);
+  }
+
+  @Post(':id/poll-vote')
+  @ApiOperation({ summary: '动态投票' })
+  votePoll(
+    @Param('id') dynamicId: string,
+    @CurrentUser('id') userId: string,
+    @Body() body: { optionId: string },
+  ) {
+    return this.feedService.votePoll(dynamicId, userId, body.optionId);
   }
 }

@@ -23,6 +23,15 @@ export class MatchesController {
     return this.matchesService.getMyMatches(userId);
   }
 
+  @Get(':targetUserId/status')
+  @ApiOperation({ summary: '获取与目标用户的互动状态' })
+  getInteractionStatus(
+    @CurrentUser('id') userId: string,
+    @Param('targetUserId') targetUserId: string,
+  ) {
+    return this.matchesService.getInteractionStatus(userId, targetUserId);
+  }
+
   @Post(':targetUserId/accept')
   @ApiOperation({ summary: '接受匹配' })
   acceptMatch(

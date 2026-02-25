@@ -47,6 +47,36 @@ export class AiService {
     }
   }
 
+  async getPlayPlans(
+    mode: string,
+    instruction: string,
+    relationshipStage: string,
+    userProfile: any,
+  ) {
+    try {
+      const response = await fetch(`${this.aiServiceUrl}/api/v1/play/plans`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode,
+          instruction,
+          relationship_stage: relationshipStage,
+          user_profile: userProfile || {},
+        }),
+      });
+
+      if (!response.ok) {
+        this.logger.warn(`Play planner returned ${response.status}`);
+        return this.getFallbackPlayPlans(mode);
+      }
+
+      return response.json();
+    } catch {
+      this.logger.warn('Play planner unavailable, using fallback');
+      return this.getFallbackPlayPlans(mode);
+    }
+  }
+
   /**
    * Match Agent: 画像分析→兼容性评估(R1)→匹配理由
    */
@@ -167,6 +197,25 @@ export class AiService {
       progress_score: 50,
       advice: ['保持真诚的沟通', '多了解对方的兴趣爱好', '注意倾听对方的感受'],
       stage_report: '暂时无法生成详细报告，请稍后重试。',
+    };
+  }
+
+  private getFallbackPlayPlans(mode: string) {
+    if (mode === 'date-planner') {
+      return {
+        plans: [
+          '方案A：咖啡破冰 + 20分钟散步，预算 50-120，开场问最近一件小开心。',
+          '方案B：逛展 + 晚餐复盘，预算 150-350，围绕“最有共鸣的一件作品”展开。',
+          '方案C：雨天桌游/手作，预算 80-220，先轻任务再聊彼此近况。',
+        ],
+      };
+    }
+    return {
+      plans: [
+        '共创A：各提 2 个点子，合并为 1 个本周可执行计划。',
+        '共创B：双人故事接龙，每人 2 句，最后整合成完整版本。',
+        '共创C：关系升级卡（期待/边界/行动）并约定一周后复盘。',
+      ],
     };
   }
 }

@@ -62,6 +62,19 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   province?: string;
+
+  @ApiProperty({
+    type: [Object],
+    required: false,
+    description: '灵魂相册媒体列表，支持图片与视频',
+    example: [
+      { url: 'https://example.com/a.jpg', type: 'image' },
+      { url: 'https://example.com/b.mp4', type: 'video', mimeType: 'video/mp4' },
+    ],
+  })
+  @IsOptional()
+  @IsArray()
+  soulGallery?: Array<string | { url: string; type?: 'image' | 'video'; mimeType?: string }>;
 }
 
 export class UpdatePsychProfileDto {

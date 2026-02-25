@@ -30,6 +30,9 @@ import { HealthCheckDto } from './dto/health-check.dto';
 import { QueryReportsDto } from './dto/query-reports.dto';
 import { QueryAuditLogsDto } from './dto/query-audit-logs.dto';
 import { ADMIN_THROTTLE } from './admin-throttle.config';
+import { RepairDataDto } from './dto/repair-data.dto';
+import { UpdateAvatarPoolConfigDto } from './dto/update-avatar-pool-config.dto';
+import { GenerateDefaultAvatarsDto } from './dto/generate-default-avatars.dto';
 
 type ReqUser = { id?: string; sub?: string };
 type ReqWithUser = Request & { user?: ReqUser };
@@ -428,6 +431,83 @@ export class AdminController {
   @ApiOperation({ summary: '服务健康检查代理' })
   checkHealth(@Body() body: HealthCheckDto) {
     return this.adminService.checkServiceHealth(body.serviceKey);
+  }
+
+  @Post('tools/repair-data')
+  @ApiOperation({ summary: '修复用户历史数据（头像/积分）' })
+  @Throttle({ default: { limit: 2, ttl: 60_000 } })
+  async repairData(@Body() body: RepairDataDto, @Req() req: ReqWithUser) {
+    const requesterId = this.requireAdminId(req);
+    const result = await this.adminService.repairUserData(
+      requesterId,
+      body.scope || 'all',
+      !!body.dryRun,
+    );
+    this.log(
+      req,
+      'REPAIR_USER_DATA',
+      'system',
+      undefined,
+      `scope=${result.scope}, dryRun=${result.dryRun}, avatarFixed=${result.avatarFixed}, creditCreated=${result.creditScoreCreated}, creditLevelFixed=${result.creditLevelFixed}`,
+    );
+    return result;
+  }
+
+  @Get('tools/avatar-pool-config')
+  @ApiOperation({ summary: '获取默认头像池配置' })
+  getAvatarPoolConfig() {
+    return this.adminService.getAvatarPoolSettings();
+  }
+
+  @Post('tools/avatar-pool-config')
+  @ApiOperation({ summary: '更新默认头像池配置（运行时）' })
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async updateAvatarPoolConfig(
+    @Body() body: UpdateAvatarPoolConfigDto,
+    @Req() req: ReqWithUser,
+  ) {
+    const requesterId = this.requireAdminId(req);
+    const result = await this.adminService.updateAvatarPoolSettings(requesterId, {
+      perStyle: body.perStyle,
+      reset: body.reset,
+    });
+    this.log(
+      req,
+      'UPDATE_AVATAR_POOL_CONFIG',
+      'system',
+      undefined,
+      `perStyle=${result.perStyle}, source=${result.source}, reset=${!!body.reset}`,
+    );
+    return result;
+  }
+
+  @Get('tools/default-avatars')
+  @ApiOperation({ summary: '获取默认头像池状态' })
+  getDefaultAvatars() {
+    return this.adminService.getDefaultAvatarPoolSettings();
+  }
+
+  @Post('tools/default-avatars/generate')
+  @ApiOperation({ summary: '随机生成默认头像池' })
+  @Throttle({ default: { limit: 2, ttl: 60_000 } })
+  async generateDefaultAvatars(
+    @Body() body: GenerateDefaultAvatarsDto,
+    @Req() req: ReqWithUser,
+  ) {
+    const requesterId = this.requireAdminId(req);
+    const count = body.count || 1000;
+    const result = await this.adminService.generateDefaultAvatarPool(
+      requesterId,
+      count,
+    );
+    this.log(
+      req,
+      'GENERATE_DEFAULT_AVATARS',
+      'system',
+      undefined,
+      `count=${count}`,
+    );
+    return result;
   }
 
   @Get('export/users')

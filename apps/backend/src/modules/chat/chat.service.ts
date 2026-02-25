@@ -182,6 +182,7 @@ export class ChatService {
     if (match.userAId !== userId && match.userBId !== userId) {
       throw new ForbiddenException('Not part of this match');
     }
+    await this.assertNotBlockedBetweenUsers(match.userAId, match.userBId);
 
     let conversation = await this.prisma.conversation.findUnique({
       where: { matchId },
@@ -201,7 +202,8 @@ export class ChatService {
   }
 
   async getConversations(userId: string) {
-    return this.prisma.conversation.findMany({
+    const blockedUserIds = await this.getBlockedUserIds(userId);
+    const rows = await this.prisma.conversation.findMany({
       where: {
         match: {
           OR: [{ userAId: userId }, { userBId: userId }],
@@ -222,6 +224,11 @@ export class ChatService {
         },
       },
       orderBy: { updatedAt: 'desc' },
+    });
+    if (!blockedUserIds.length) return rows;
+    return rows.filter((row) => {
+      const otherId = row.match.userAId === userId ? row.match.userBId : row.match.userAId;
+      return !blockedUserIds.includes(otherId);
     });
   }
 
@@ -456,7 +463,37 @@ export class ChatService {
     ) {
       throw new ForbiddenException('Not part of this conversation');
     }
+    await this.assertNotBlockedBetweenUsers(
+      conversation.match.userAId,
+      conversation.match.userBId,
+    );
     return conversation;
+  }
+
+  private async getBlockedUserIds(userId: string): Promise<string[]> {
+    const rows = await this.prisma.userBlock.findMany({
+      where: {
+        OR: [{ blockerId: userId }, { blockedId: userId }],
+      },
+      select: { blockerId: true, blockedId: true },
+    });
+    return rows.map((row) =>
+      row.blockerId === userId ? row.blockedId : row.blockerId,
+    );
+  }
+
+  private async assertNotBlockedBetweenUsers(userAId: string, userBId: string) {
+    const count = await this.prisma.userBlock.count({
+      where: {
+        OR: [
+          { blockerId: userAId, blockedId: userBId },
+          { blockerId: userBId, blockedId: userAId },
+        ],
+      },
+    });
+    if (count > 0) {
+      throw new ForbiddenException('你与对方存在拉黑关系，暂时无法聊天');
+    }
   }
 
   private async tryChatCreditReward(userId: string) {

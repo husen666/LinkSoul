@@ -10,12 +10,19 @@ import { hash, compare } from 'bcryptjs';
 import { randomBytes } from 'crypto';
 import { APP_VERSION } from '../../version';
 import {
+  generateManagedDefaultAvatarPool,
   generateDefaultAvatar,
+  getAvatarPoolConfig,
+  getManagedDefaultAvatarPoolInfo,
   pickAvatarStyle,
+  resetAvatarPoolPerStyle,
+  setAvatarPoolPerStyle,
 } from '../../common/utils/avatar.util';
 
 const MAX_PAGE_SIZE = 100;
 const MAX_ANALYTICS_DAYS = 90;
+const BATCH_UPDATE_SIZE = 30;
+const READ_CACHE_TTL_MS = 10_000;
 const USER_STATUS_SET = new Set([
   'ACTIVE',
   'INACTIVE',
@@ -34,11 +41,11 @@ const REPORT_STATUS_SET = new Set([
   'RESOLVED',
   'DISMISSED',
 ]);
-const HEALTH_SERVICE_URLS: Record<string, string> = {
-  backend: 'http://localhost:3000/api/v1/health',
-  ai: 'http://localhost:8000/health',
-  mobile: 'http://localhost:8081',
-  admin: 'http://localhost:5174',
+const HEALTH_SERVICE_URLS: Record<string, string[]> = {
+  backend: ['http://localhost:3000/api/v1/health'],
+  ai: ['http://localhost:8000/health', 'http://localhost:8000/docs', 'http://localhost:8000'],
+  mobile: ['http://localhost:8081'],
+  admin: ['http://localhost:5174', 'http://localhost:5173'],
 };
 
 function clampPage(page: any, pageSize: any, defaultPs = 20) {
@@ -64,9 +71,60 @@ function isValidHttpUrl(url: string) {
   return /^https?:\/\/.+/i.test(url);
 }
 
+function buildCreatedAtRange(startDate?: string, endDate?: string) {
+  const createdAt: Record<string, Date> = {};
+  if (startDate) {
+    const start = new Date(startDate);
+    if (!Number.isNaN(start.getTime())) {
+      start.setHours(0, 0, 0, 0);
+      createdAt.gte = start;
+    }
+  }
+  if (endDate) {
+    const end = new Date(endDate);
+    if (!Number.isNaN(end.getTime())) {
+      end.setHours(23, 59, 59, 999);
+      createdAt.lte = end;
+    }
+  }
+  return Object.keys(createdAt).length > 0 ? createdAt : undefined;
+}
+
 @Injectable()
 export class AdminService {
   constructor(private prisma: PrismaService) {}
+  private readonly readCache = new Map<
+    string,
+    { expiresAt: number; value: unknown }
+  >();
+
+  private getReadCache<T>(key: string): T | null {
+    const cached = this.readCache.get(key);
+    if (!cached) return null;
+    if (Date.now() >= cached.expiresAt) {
+      this.readCache.delete(key);
+      return null;
+    }
+    return cached.value as T;
+  }
+
+  private setReadCache(key: string, value: unknown, ttlMs = READ_CACHE_TTL_MS) {
+    this.readCache.set(key, { value, expiresAt: Date.now() + ttlMs });
+  }
+
+  private async attachAdminProfiles<T extends { adminId: string }>(logs: T[]) {
+    if (logs.length === 0) return [];
+    const adminIds = [...new Set(logs.map((l) => l.adminId))];
+    const admins =
+      adminIds.length > 0
+        ? await this.prisma.user.findMany({
+            where: { id: { in: adminIds } },
+            select: { id: true, nickname: true, avatar: true },
+          })
+        : [];
+    const adminMap = Object.fromEntries(admins.map((a) => [a.id, a]));
+    return logs.map((l) => ({ ...l, admin: adminMap[l.adminId] || null }));
+  }
 
   private async assertSuperAdmin(adminId: string) {
     const firstAdmin = await this.prisma.user.findFirst({
@@ -79,7 +137,16 @@ export class AdminService {
     }
   }
 
+  private computeCreditLevel(score: number): 'BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM' {
+    if (score >= 95) return 'PLATINUM';
+    if (score >= 80) return 'GOLD';
+    if (score >= 60) return 'SILVER';
+    return 'BRONZE';
+  }
+
   async getDashboardStats() {
+    const cached = this.getReadCache<any>('admin:dashboard-stats');
+    if (cached) return cached;
     const [
       totalUsers,
       activeUsers,
@@ -172,7 +239,7 @@ export class AdminService {
     const testCompletionRate =
       totalProfiles > 0 ? Math.round((testCompleted / totalProfiles) * 100) : 0;
 
-    return {
+    const result = {
       overview: {
         totalUsers,
         activeUsers,
@@ -190,6 +257,8 @@ export class AdminService {
       recentUsers,
       trendData,
     };
+    this.setReadCache('admin:dashboard-stats', result);
+    return result;
   }
 
   // ─── User Management ───
@@ -461,24 +530,8 @@ export class AdminService {
         { reason: { contains: search } },
       ];
     }
-    if (startDate || endDate) {
-      const createdAt: Record<string, Date> = {};
-      if (startDate) {
-        const start = new Date(startDate);
-        if (!Number.isNaN(start.getTime())) {
-          start.setHours(0, 0, 0, 0);
-          createdAt.gte = start;
-        }
-      }
-      if (endDate) {
-        const end = new Date(endDate);
-        if (!Number.isNaN(end.getTime())) {
-          end.setHours(23, 59, 59, 999);
-          createdAt.lte = end;
-        }
-      }
-      if (Object.keys(createdAt).length > 0) where.createdAt = createdAt;
-    }
+    const createdAtRange = buildCreatedAtRange(startDate, endDate);
+    if (createdAtRange) where.createdAt = createdAtRange;
 
     const [reports, total] = await Promise.all([
       this.prisma.report.findMany({
@@ -638,6 +691,8 @@ export class AdminService {
   // ─── Personality Test Stats ───
 
   async getPersonalityStats() {
+    const cached = this.getReadCache<any>('admin:personality-stats');
+    if (cached) return cached;
     const total = await this.prisma.userProfile.count();
     const completed = await this.prisma.userProfile.count({
       where: { testCompleted: true },
@@ -655,7 +710,7 @@ export class AdminService {
       _count: true,
     });
 
-    return {
+    const result = {
       total,
       completed,
       completionRate: total > 0 ? Math.round((completed / total) * 100) : 0,
@@ -668,11 +723,15 @@ export class AdminService {
         count: c._count,
       })),
     };
+    this.setReadCache('admin:personality-stats', result);
+    return result;
   }
 
   // ─── System Settings & Org ───
 
   async getSystemInfo() {
+    const cached = this.getReadCache<any>('admin:system-info');
+    if (cached) return cached;
     const [userCount, adminCount, matchCount, msgCount, reportCount] =
       await Promise.all([
         this.prisma.user.count({ where: { role: 'USER' } }),
@@ -682,7 +741,7 @@ export class AdminService {
         this.prisma.report.count(),
       ]);
 
-    return {
+    const result = {
       version: APP_VERSION,
       database: 'SQLite',
       userCount,
@@ -717,6 +776,8 @@ export class AdminService {
         },
       ],
     };
+    this.setReadCache('admin:system-info', result);
+    return result;
   }
 
   async getAdminUsers() {
@@ -1149,23 +1210,197 @@ export class AdminService {
     return { success: true };
   }
 
-  async checkServiceHealth(serviceKey: string) {
-    const url = HEALTH_SERVICE_URLS[serviceKey];
-    if (!url) throw new BadRequestException('不支持的服务标识');
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeout);
-      return {
-        serviceKey,
-        url,
-        status: res.ok ? 'running' : 'error',
-        statusCode: res.status,
-      };
-    } catch {
-      return { serviceKey, url, status: 'offline', statusCode: 0 };
+  async repairUserData(
+    requesterId: string,
+    scope:
+      | 'all'
+      | 'avatars'
+      | 'credits'
+      | 'credit-create'
+      | 'credit-levels' = 'all',
+    dryRun = false,
+  ) {
+    await this.assertSuperAdmin(requesterId);
+    const shouldHandleAvatar = scope === 'all' || scope === 'avatars';
+    const shouldCreateCredit =
+      scope === 'all' || scope === 'credits' || scope === 'credit-create';
+    const shouldRecalcCreditLevel =
+      scope === 'all' || scope === 'credits' || scope === 'credit-levels';
+
+    const users = await this.prisma.user.findMany({
+      where: { role: 'USER' },
+      select: {
+        id: true,
+        nickname: true,
+        avatar: true,
+        creditScore: {
+          select: { id: true, score: true, level: true },
+        },
+      },
+    });
+
+    const avatarFixIds: string[] = [];
+    const creditLevelFixIds: string[] = [];
+    const creditCreateIds: string[] = [];
+    const avatarFixPayloads: Array<{ id: string; nickname: string }> = [];
+    const creditCreateData: Array<{ userId: string; score: number; level: 'BRONZE' }> = [];
+    const creditLevelFixByLevel: Record<
+      'BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM',
+      string[]
+    > = {
+      BRONZE: [],
+      SILVER: [],
+      GOLD: [],
+      PLATINUM: [],
+    };
+
+    for (const user of users) {
+      if (shouldHandleAvatar && !String(user.avatar || '').trim()) {
+        avatarFixIds.push(user.id);
+        avatarFixPayloads.push({ id: user.id, nickname: user.nickname });
+      }
+
+      if (shouldCreateCredit && !user.creditScore) {
+        creditCreateIds.push(user.id);
+        creditCreateData.push({
+          userId: user.id,
+          score: 0,
+          level: 'BRONZE',
+        });
+      }
+
+      if (shouldRecalcCreditLevel && user.creditScore) {
+        const expected = this.computeCreditLevel(user.creditScore.score);
+        if (user.creditScore.level !== expected) {
+          creditLevelFixIds.push(user.id);
+          creditLevelFixByLevel[expected].push(user.id);
+        }
+      }
     }
+
+    if (!dryRun) {
+      if (shouldCreateCredit && creditCreateData.length > 0) {
+        await this.prisma.creditScore.createMany({
+          data: creditCreateData,
+        });
+      }
+
+      if (shouldRecalcCreditLevel) {
+        const levelEntries = Object.entries(creditLevelFixByLevel) as Array<
+          ['BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM', string[]]
+        >;
+        for (const [level, userIds] of levelEntries) {
+          if (userIds.length === 0) continue;
+          await this.prisma.creditScore.updateMany({
+            where: { userId: { in: userIds } },
+            data: { level },
+          });
+        }
+      }
+
+      if (shouldHandleAvatar && avatarFixPayloads.length > 0) {
+        for (let i = 0; i < avatarFixPayloads.length; i += BATCH_UPDATE_SIZE) {
+          const chunk = avatarFixPayloads.slice(i, i + BATCH_UPDATE_SIZE);
+          await this.prisma.$transaction(
+            chunk.map((item) =>
+              this.prisma.user.update({
+                where: { id: item.id },
+                data: {
+                  avatar: generateDefaultAvatar(
+                    item.nickname,
+                    pickAvatarStyle(item.nickname),
+                  ),
+                },
+              }),
+            ),
+          );
+        }
+      }
+    }
+
+    return {
+      success: true,
+      scope,
+      dryRun,
+      scannedUsers: users.length,
+      avatarFixed: avatarFixIds.length,
+      creditScoreCreated: creditCreateIds.length,
+      creditLevelFixed: creditLevelFixIds.length,
+      preview: {
+        avatarUserIds: avatarFixIds.slice(0, 20),
+        creditCreatedUserIds: creditCreateIds.slice(0, 20),
+        creditLevelFixedUserIds: creditLevelFixIds.slice(0, 20),
+      },
+    };
+  }
+
+  async checkServiceHealth(serviceKey: string) {
+    const urls = HEALTH_SERVICE_URLS[serviceKey];
+    if (!urls || urls.length === 0)
+      throw new BadRequestException('不支持的服务标识');
+
+    const attempts: Array<{ url: string; statusCode: number }> = [];
+    let firstErrorUrl = urls[0];
+
+    for (const url of urls) {
+      firstErrorUrl = firstErrorUrl || url;
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeout);
+        attempts.push({ url, statusCode: res.status });
+        if (res.ok) {
+          return {
+            serviceKey,
+            url,
+            status: 'running',
+            statusCode: res.status,
+            checkedUrls: attempts,
+          };
+        }
+      } catch {
+        attempts.push({ url, statusCode: 0 });
+      }
+    }
+
+    const hasHttpResponse = attempts.some((a) => a.statusCode > 0);
+    return {
+      serviceKey,
+      url: firstErrorUrl,
+      status: hasHttpResponse ? 'error' : 'offline',
+      statusCode: hasHttpResponse
+        ? attempts.find((a) => a.statusCode > 0)?.statusCode || 0
+        : 0,
+      checkedUrls: attempts,
+    };
+  }
+
+  getAvatarPoolSettings() {
+    return getAvatarPoolConfig();
+  }
+
+  getDefaultAvatarPoolSettings() {
+    return getManagedDefaultAvatarPoolInfo();
+  }
+
+  async updateAvatarPoolSettings(
+    requesterId: string,
+    payload: { perStyle?: number; reset?: boolean },
+  ) {
+    await this.assertSuperAdmin(requesterId);
+    if (payload.reset) {
+      return resetAvatarPoolPerStyle();
+    }
+    if (payload.perStyle == null) {
+      throw new BadRequestException('请提供 perStyle 或 reset=true');
+    }
+    return setAvatarPoolPerStyle(payload.perStyle);
+  }
+
+  async generateDefaultAvatarPool(requesterId: string, count = 1000) {
+    await this.assertSuperAdmin(requesterId);
+    return generateManagedDefaultAvatarPool(count);
   }
 
   async exportUsers() {
@@ -1211,24 +1446,8 @@ export class AdminService {
     if (adminSearch) {
       where.admin = { nickname: { contains: adminSearch } };
     }
-    if (startDate || endDate) {
-      const createdAt: Record<string, Date> = {};
-      if (startDate) {
-        const start = new Date(startDate);
-        if (!Number.isNaN(start.getTime())) {
-          start.setHours(0, 0, 0, 0);
-          createdAt.gte = start;
-        }
-      }
-      if (endDate) {
-        const end = new Date(endDate);
-        if (!Number.isNaN(end.getTime())) {
-          end.setHours(23, 59, 59, 999);
-          createdAt.lte = end;
-        }
-      }
-      if (Object.keys(createdAt).length > 0) where.createdAt = createdAt;
-    }
+    const createdAtRange = buildCreatedAtRange(startDate, endDate);
+    if (createdAtRange) where.createdAt = createdAtRange;
 
     const [logs, total] = await Promise.all([
       this.prisma.adminLog.findMany({
@@ -1240,18 +1459,8 @@ export class AdminService {
       this.prisma.adminLog.count({ where }),
     ]);
 
-    const adminIds = [...new Set(logs.map((l) => l.adminId))];
-    const admins =
-      adminIds.length > 0
-        ? await this.prisma.user.findMany({
-            where: { id: { in: adminIds } },
-            select: { id: true, nickname: true, avatar: true },
-          })
-        : [];
-    const adminMap = Object.fromEntries(admins.map((a) => [a.id, a]));
-
     return {
-      logs: logs.map((l) => ({ ...l, admin: adminMap[l.adminId] || null })),
+      logs: await this.attachAdminProfiles(logs),
       total,
       page: p,
       pageSize: ps,
@@ -1270,24 +1479,8 @@ export class AdminService {
     if (adminSearch) {
       where.admin = { nickname: { contains: adminSearch } };
     }
-    if (startDate || endDate) {
-      const createdAt: Record<string, Date> = {};
-      if (startDate) {
-        const start = new Date(startDate);
-        if (!Number.isNaN(start.getTime())) {
-          start.setHours(0, 0, 0, 0);
-          createdAt.gte = start;
-        }
-      }
-      if (endDate) {
-        const end = new Date(endDate);
-        if (!Number.isNaN(end.getTime())) {
-          end.setHours(23, 59, 59, 999);
-          createdAt.lte = end;
-        }
-      }
-      if (Object.keys(createdAt).length > 0) where.createdAt = createdAt;
-    }
+    const createdAtRange = buildCreatedAtRange(startDate, endDate);
+    if (createdAtRange) where.createdAt = createdAtRange;
 
     const logs = await this.prisma.adminLog.findMany({
       where,
@@ -1295,17 +1488,8 @@ export class AdminService {
       take: 5000,
     });
 
-    const adminIds = [...new Set(logs.map((l) => l.adminId))];
-    const admins =
-      adminIds.length > 0
-        ? await this.prisma.user.findMany({
-            where: { id: { in: adminIds } },
-            select: { id: true, nickname: true, avatar: true },
-          })
-        : [];
-    const adminMap = Object.fromEntries(admins.map((a) => [a.id, a]));
     return {
-      logs: logs.map((l) => ({ ...l, admin: adminMap[l.adminId] || null })),
+      logs: await this.attachAdminProfiles(logs),
       total: logs.length,
     };
   }

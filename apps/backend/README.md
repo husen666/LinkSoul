@@ -38,6 +38,20 @@ Risk-sensitive admin APIs have dedicated throttling limits and can be adjusted t
 
 These values are loaded at app startup. Restart backend after changing `.env`.
 
+## Default Avatar Pool
+
+Default avatars are generated from a backend avatar pool, then randomly assigned for registration and "change avatar" actions.
+
+- Pool size per style: `AVATAR_POOL_PER_STYLE` (range: `1~24`, default: `8`)
+- Supported styles: `MINIMAL`, `PLANET`, `CYBER`
+- Runtime admin APIs:
+  - `GET /api/v1/admin/tools/avatar-pool-config` query effective config
+  - `POST /api/v1/admin/tools/avatar-pool-config` update runtime pool size (`{ perStyle: number }`) or reset to env (`{ reset: true }`)
+  - `GET /api/v1/admin/tools/default-avatars` query managed default avatar pool
+  - `POST /api/v1/admin/tools/default-avatars/generate` generate managed pool (default `1000`, max `5000`)
+
+Larger pool sizes provide more random variety but slightly increase in-memory generation cost.
+
 ## Project setup
 
 ```bash

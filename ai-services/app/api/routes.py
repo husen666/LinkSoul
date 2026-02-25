@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from app.services.chat_service import generate_chat_suggestions
 from app.services.emotion_service import analyze_emotion
 from app.services.screenshot_service import analyze_screenshot
+from app.services.play_service import generate_play_plans
 from app.agents.match_agent import run_match_agent
 from app.agents.relation_agent import run_relation_agent
 from app.agents.personality_agent import run_personality_agent
@@ -35,6 +36,29 @@ async def get_chat_suggestions(req: ChatSuggestionRequest):
         relationship_stage=req.relationship_stage,
     )
     return ChatSuggestionResponse(**result)
+
+
+class PlayPlanRequest(BaseModel):
+    mode: str
+    instruction: str
+    relationship_stage: str = "INITIAL"
+    user_profile: dict = {}
+
+
+class PlayPlanResponse(BaseModel):
+    plans: list[str]
+
+
+@router.post("/play/plans", response_model=PlayPlanResponse)
+async def get_play_plans(req: PlayPlanRequest):
+    """玩法规划：输出 3 条可执行方案"""
+    result = await generate_play_plans(
+        mode=req.mode,
+        instruction=req.instruction,
+        relationship_stage=req.relationship_stage,
+        user_profile=req.user_profile,
+    )
+    return PlayPlanResponse(**result)
 
 
 # ── Emotion Analysis ───────────────────────────────────

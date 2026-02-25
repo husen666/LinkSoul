@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { RedisService } from '../../common/redis/redis.service';
 
 const PK_QUESTIONS = [
   { q: '雨天你更想？', a: '窝在家', b: '出去走走' },
@@ -81,7 +82,10 @@ const SOUL_TYPES = [
 
 @Injectable()
 export class FunService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private redis: RedisService,
+  ) {}
 
   private dateSeed() {
     const d = new Date();
@@ -125,15 +129,71 @@ export class FunService {
         },
       },
     });
-    if (accepted.length === 0) {
-      throw new NotFoundException('今天的盲盒已空，明天再来');
-    }
-    const seed =
-      this.dateSeed() +
-      userId.split('').reduce((s, c) => s + c.charCodeAt(0), 0);
-    const picked =
-      accepted[Math.floor(this.seededRandom(seed, 9) * accepted.length)];
+    const fallbackPending =
+      accepted.length === 0
+        ? await this.prisma.match.findMany({
+            where: {
+              status: 'PENDING',
+              OR: [{ userAId: userId }, { userBId: userId }],
+            },
+            include: {
+              userA: {
+                select: {
+                  id: true,
+                  nickname: true,
+                  avatar: true,
+                  city: true,
+                  bio: true,
+                  gender: true,
+                  birthDate: true,
+                },
+              },
+              userB: {
+                select: {
+                  id: true,
+                  nickname: true,
+                  avatar: true,
+                  city: true,
+                  bio: true,
+                  gender: true,
+                  birthDate: true,
+                },
+              },
+            },
+          })
+        : [];
+    const candidates = accepted.length > 0 ? accepted : fallbackPending;
+    if (candidates.length === 0)
+      throw new NotFoundException('今天的盲盒已空，先去匹配页寻找缘分吧');
+
+    const deduped = this.dedupeByOtherUser(candidates, userId);
+    const recentKey = `fun:blindbox:recent:${userId}`;
+    const recent = (await this.redis.getJson<string[]>(recentKey)) || [];
+    const lastPickedId = recent[0] || null;
+    const available = deduped.filter((m) => {
+      const otherId = m.userA.id === userId ? m.userB.id : m.userA.id;
+      return !recent.includes(otherId);
+    });
+    const dedupedWithoutLast =
+      lastPickedId && deduped.length > 1
+        ? deduped.filter((m) => {
+            const otherId = m.userA.id === userId ? m.userB.id : m.userA.id;
+            return otherId !== lastPickedId;
+          })
+        : deduped;
+    const pool =
+      available.length > 0
+        ? available
+        : dedupedWithoutLast.length > 0
+          ? dedupedWithoutLast
+          : deduped;
+    const picked = pool[Math.floor(Math.random() * pool.length)];
     const other = picked.userA.id === userId ? picked.userB : picked.userA;
+    const nextRecent = [other.id, ...recent.filter((id) => id !== other.id)].slice(
+      0,
+      8,
+    );
+    await this.redis.setJson(recentKey, nextRecent, 12 * 3600);
     return {
       userId: other.id,
       nickname: other.nickname,
@@ -148,6 +208,31 @@ export class FunService {
         : null,
       matchId: picked.id,
     };
+  }
+
+  private dedupeByOtherUser<
+    T extends {
+      userAId: string;
+      userBId: string;
+      updatedAt: Date;
+      score: number;
+      userA: { id: string };
+      userB: { id: string };
+    },
+  >(rows: T[], userId: string) {
+    const byOther = new Map<string, T>();
+    for (const row of rows) {
+      const otherId = row.userAId === userId ? row.userBId : row.userAId;
+      const prev = byOther.get(otherId);
+      if (!prev) {
+        byOther.set(otherId, row);
+        continue;
+      }
+      if (row.updatedAt > prev.updatedAt || row.score > prev.score) {
+        byOther.set(otherId, row);
+      }
+    }
+    return Array.from(byOther.values());
   }
 
   async startCompatPk(userId: string, matchId: string) {
@@ -178,7 +263,12 @@ export class FunService {
 
   getTodayFortune(userId: string) {
     const userSeed = userId.split('').reduce((s, c) => s + c.charCodeAt(0), 0);
-    const seed = this.dateSeed() + userSeed;
+    // Draw mode: each request gets a fresh random fortune.
+    const seed =
+      this.dateSeed() +
+      userSeed +
+      Date.now() +
+      Math.floor(Math.random() * 1_000_000);
     return {
       loveLuck: Math.floor(this.seededRandom(seed, 0) * 3) + 3,
       socialLuck: Math.floor(this.seededRandom(seed, 1) * 3) + 3,

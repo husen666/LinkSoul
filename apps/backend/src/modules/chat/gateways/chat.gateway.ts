@@ -19,7 +19,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
-  private userSockets = new Map<string, string>();
+  private userSocketCount = new Map<string, number>();
 
   constructor(
     private chatService: ChatService,
@@ -46,15 +46,27 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   async handleConnection(client: Socket) {
     const userId = this.getUserId(client);
     if (!userId) return client.disconnect(true);
-    this.userSockets.set(userId, client.id);
-    await this.chatService.setOnlineStatus(userId, true);
+    client.data.userId = userId;
+    client.join(`user:${userId}`);
+    const currentCount = this.userSocketCount.get(userId) || 0;
+    const nextCount = currentCount + 1;
+    this.userSocketCount.set(userId, nextCount);
+    if (nextCount === 1) {
+      await this.chatService.setOnlineStatus(userId, true);
+    }
   }
 
   async handleDisconnect(client: Socket) {
-    const userId = this.getUserId(client);
+    const userId = (client.data.userId as string | undefined) || this.getUserId(client);
     if (userId) {
-      this.userSockets.delete(userId);
-      await this.chatService.setOnlineStatus(userId, false);
+      const currentCount = this.userSocketCount.get(userId) || 0;
+      const nextCount = Math.max(0, currentCount - 1);
+      if (nextCount === 0) {
+        this.userSocketCount.delete(userId);
+        await this.chatService.setOnlineStatus(userId, false);
+      } else {
+        this.userSocketCount.set(userId, nextCount);
+      }
     }
   }
 
@@ -96,6 +108,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     const userId = this.getUserId(client);
     if (!userId) return;
+    const convo = await this.chatService.assertConversationMember(
+      data.conversationId,
+      userId,
+    );
 
     const message = await this.chatService.sendMessage(
       data.conversationId,
@@ -111,9 +127,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       },
     );
 
-    this.server
-      .to(`conversation:${data.conversationId}`)
-      .emit('newMessage', message);
+    const participantIds = [convo.match.userAId, convo.match.userBId];
+    for (const participantId of participantIds) {
+      this.server.to(`user:${participantId}`).emit('newMessage', message);
+    }
 
     return message;
   }
@@ -142,10 +159,20 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     const userId = this.getUserId(client);
     if (!userId) return;
+    const convo = await this.chatService.assertConversationMember(
+      data.conversationId,
+      userId,
+    );
     await this.chatService.markAsRead(data.conversationId, userId);
-    this.server.to(`conversation:${data.conversationId}`).emit('messagesRead', {
+    const payload = {
       userId,
       conversationId: data.conversationId,
-    });
+    };
+    this.server
+      .to(`user:${convo.match.userAId}`)
+      .emit('messagesRead', payload);
+    this.server
+      .to(`user:${convo.match.userBId}`)
+      .emit('messagesRead', payload);
   }
 }

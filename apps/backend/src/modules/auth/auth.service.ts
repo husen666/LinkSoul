@@ -10,6 +10,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import {
+  pickRandomManagedDefaultAvatar,
   pickRandomAvatarFromBatch,
 } from '../../common/utils/avatar.util';
 
@@ -97,7 +98,8 @@ export class AuthService {
     const nickname = this.generateAiNickname(
       dto.nickname || dto.phone || dto.email,
     );
-    const avatar = pickRandomAvatarFromBatch(nickname, { perStyle: 4 });
+    const avatar =
+      pickRandomManagedDefaultAvatar() || pickRandomAvatarFromBatch(nickname);
 
     const initScore = 0;
     const user = await this.prisma.user.create({
@@ -155,7 +157,9 @@ export class AuthService {
 
     let avatar = user.avatar;
     if (!avatar) {
-      avatar = pickRandomAvatarFromBatch(user.nickname, { perStyle: 4 });
+      avatar =
+        pickRandomManagedDefaultAvatar() ||
+        pickRandomAvatarFromBatch(user.nickname);
       await this.prisma.user.update({
         where: { id: user.id },
         data: { avatar },

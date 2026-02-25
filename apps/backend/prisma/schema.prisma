@@ -69,10 +69,13 @@ model User {
   creditLogs       CreditLog[]
   sentReports      Report[]       @relation("Reporter")
   receivedReports  Report[]       @relation("Reported")
+  blockedUsers     UserBlock[]    @relation("UserBlocksByBlocker")
+  blockedByUsers   UserBlock[]    @relation("UserBlocksByBlocked")
   soulSessions     SoulSession[]
   dynamics         Dynamic[]
   dynamicLikes     DynamicLike[]
   dynamicComments  DynamicComment[]
+  dynamicPollVotes DynamicPollVote[]
 
   @@map("users")
 }
@@ -83,6 +86,7 @@ model UserProfile {
   attachmentType     AttachmentType?    @map("attachment_type")
   communicationStyle CommunicationStyle? @map("communication_style")
   personalityTags    String?            @map("personality_tags")
+  soulGallery        String?            @map("soul_gallery")
   valuesVector       String?            @map("values_vector")
   aiSummary          String?            @map("ai_summary")
   testCompleted      Boolean            @default(false) @map("test_completed")
@@ -276,6 +280,21 @@ model Report {
   @@map("reports")
 }
 
+model UserBlock {
+  id        String   @id @default(cuid())
+  blockerId String   @map("blocker_id")
+  blockedId String   @map("blocked_id")
+  reason    String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  blocker User @relation("UserBlocksByBlocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("UserBlocksByBlocked", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@index([blockedId])
+  @@map("user_blocks")
+}
+
 // ============================================
 // Soul Relief (心灵解脱)
 // ============================================
@@ -339,7 +358,11 @@ model Dynamic {
   type      String   @default("post")     // post | match | test | checkin | system
   content   String
   imageUrl  String?  @map("image_url")
+  mediaList String?  @map("media_list")
   mood      String?                        // emoji mood tag
+  music     String?
+  location  String?
+  link      String?
   visibility String  @default("public")    // public | friends | private
   likes     Int      @default(0)
   createdAt DateTime @default(now()) @map("created_at")
@@ -347,6 +370,8 @@ model Dynamic {
   user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   dynamicLikes   DynamicLike[]
   dynamicComments DynamicComment[]
+  pollOptions    DynamicPollOption[]
+  pollVotes      DynamicPollVote[]
 
   @@index([createdAt])
   @@index([userId, createdAt])
@@ -378,6 +403,37 @@ model DynamicLike {
 
   @@unique([dynamicId, userId])
   @@map("dynamic_likes")
+}
+
+model DynamicPollOption {
+  id        String   @id @default(cuid())
+  dynamicId String   @map("dynamic_id")
+  text      String
+  sortOrder Int      @default(0) @map("sort_order")
+  votes     Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  dynamic Dynamic          @relation(fields: [dynamicId], references: [id], onDelete: Cascade)
+  votesBy DynamicPollVote[]
+
+  @@index([dynamicId, sortOrder])
+  @@map("dynamic_poll_options")
+}
+
+model DynamicPollVote {
+  id        String   @id @default(cuid())
+  dynamicId String   @map("dynamic_id")
+  optionId  String   @map("option_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  dynamic Dynamic           @relation(fields: [dynamicId], references: [id], onDelete: Cascade)
+  option  DynamicPollOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([dynamicId, userId])
+  @@index([optionId])
+  @@map("dynamic_poll_votes")
 }
 
 model OperationalMessage {

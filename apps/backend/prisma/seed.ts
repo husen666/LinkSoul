@@ -150,25 +150,227 @@ const users = [
   },
 ];
 
+const DYNAMIC_TOTAL = 1000;
+
+const IMAGE_POOL = [
+  'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=1200&h=900&fit=crop',
+  'https://images.unsplash.com/photo-1470770841072-f978cf4d019e?w=1200&h=900&fit=crop',
+  'https://images.unsplash.com/photo-1500534623283-312aade485b7?w=1200&h=900&fit=crop',
+  'https://images.unsplash.com/photo-1493244040629-496f6d136cc3?w=1200&h=900&fit=crop',
+  'https://images.unsplash.com/photo-1446776877081-d282a0f896e2?w=1200&h=900&fit=crop',
+  'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=1200&h=900&fit=crop',
+  'https://images.unsplash.com/photo-1469474968028-56623f02e42e?w=1200&h=900&fit=crop',
+  'https://images.unsplash.com/photo-1510798831971-661eb04b3739?w=1200&h=900&fit=crop',
+  'https://images.unsplash.com/photo-1501785888041-af3ef285b470?w=1200&h=900&fit=crop',
+  'https://images.unsplash.com/photo-1521292270410-a8c4d716d518?w=1200&h=900&fit=crop',
+];
+
+const VIDEO_POOL = [
+  'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4',
+  'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
+  'https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+];
+
+const MUSIC_POOL = [
+  'City Lights - LoFi Mix',
+  '夜色频率 · Ambient',
+  'Wave Signal - Chillhop',
+  '反重力晚风 - Indie',
+  'Blue Echoes - Jazzhop',
+  '晨间电台 - Acoustic',
+];
+
+const LOCATION_POOL = ['上海', '北京', '杭州', '深圳', '成都', '广州', '南京', '苏州'];
+const LINK_POOL = [
+  'https://www.bilibili.com',
+  'https://music.163.com',
+  'https://www.xiaohongshu.com',
+  'https://www.douban.com',
+  'https://sspai.com',
+];
+
+const PULSE_TEXT_POOL = [
+  '今天把计划推进了一大步，状态比预期更稳。',
+  '刚结束一场很有质量的对话，感觉被理解了。',
+  '夜跑回来，脑子很清醒，记录一下当下的能量。',
+  '做了一顿简单晚餐，幸福感意外地高。',
+  '读到一句话：慢一点，反而会更快。',
+  '周末想找人一起探店，偏安静一点的地方。',
+  '今天的工作节奏偏满，但完成感很足。',
+  '下雨天适合听歌，也适合把情绪慢慢放下。',
+  '尝试了新的学习方法，效率提升明显。',
+  '如果你也在调整生活节奏，欢迎交流经验。',
+];
+
+const COMMENT_POOL = [
+  '这个状态很真实，赞同。',
+  '同感，我最近也是这样。',
+  '表达得很有画面感。',
+  '有被这句击中，收藏了。',
+  '这个角度很有意思。',
+  '看完想去尝试一下。',
+  '节奏感很好，继续保持。',
+  '感谢分享，收获到了。',
+];
+
+const POLL_POOL = [
+  ['周末更想', '宅家充电', '户外走走', '约朋友聊天'],
+  ['你更看重', '情绪稳定', '价值观一致', '沟通效率'],
+  ['夜晚放松方式', '听歌', '散步', '刷书/课程', '看电影'],
+  ['约会偏好', '咖啡店', '展览馆', '公园散步', '一起做饭'],
+  ['最近想提升', '专注力', '表达力', '运动习惯', '作息规律'],
+];
+
+const MOODS = ['happy', 'calm', 'excited', 'love', 'think', null];
+
+type SeedUser = { id: string; nickname: string };
+type CreatedDynamic = {
+  id: string;
+  userId: string;
+  createdAt: Date;
+  pollOptionIds: string[];
+};
+
+function randInt(min: number, max: number) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function chance(p: number) {
+  return Math.random() < p;
+}
+
+function pickOne<T>(arr: T[]): T {
+  return arr[randInt(0, arr.length - 1)];
+}
+
+function shuffle<T>(arr: T[]): T[] {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
 async function main() {
   console.log('Seeding database...\n');
 
-  // Clear existing data
-  await prisma.message.deleteMany();
-  await prisma.conversation.deleteMany();
-  await prisma.relationship.deleteMany();
-  await prisma.match.deleteMany();
-  await prisma.creditLog.deleteMany();
-  await prisma.creditScore.deleteMany();
-  await prisma.report.deleteMany();
-  await prisma.userProfile.deleteMany();
-  await prisma.user.deleteMany();
+  // Clear non-admin user related data only, keep admin accounts untouched.
+  const normalUsers = await prisma.user.findMany({
+    where: { role: 'USER' },
+    select: { id: true },
+  });
+  const normalUserIds = normalUsers.map((u) => u.id);
+
+  if (normalUserIds.length > 0) {
+    const matches = await prisma.match.findMany({
+      where: {
+        OR: [
+          { userAId: { in: normalUserIds } },
+          { userBId: { in: normalUserIds } },
+        ],
+      },
+      select: { id: true },
+    });
+    const matchIds = matches.map((m) => m.id);
+
+    if (matchIds.length > 0) {
+      const convs = await prisma.conversation.findMany({
+        where: { matchId: { in: matchIds } },
+        select: { id: true },
+      });
+      const convIds = convs.map((c) => c.id);
+      if (convIds.length > 0) {
+        await prisma.message.deleteMany({
+          where: { conversationId: { in: convIds } },
+        });
+      }
+      await prisma.relationship.deleteMany({
+        where: { matchId: { in: matchIds } },
+      });
+      await prisma.conversation.deleteMany({
+        where: { matchId: { in: matchIds } },
+      });
+      await prisma.match.deleteMany({
+        where: { id: { in: matchIds } },
+      });
+    }
+
+    await prisma.soulMessage.deleteMany({
+      where: { session: { userId: { in: normalUserIds } } },
+    });
+    await prisma.soulSession.deleteMany({
+      where: { userId: { in: normalUserIds } },
+    });
+
+    await prisma.dynamicPollVote.deleteMany({
+      where: {
+        OR: [
+          { userId: { in: normalUserIds } },
+          { dynamic: { userId: { in: normalUserIds } } },
+        ],
+      },
+    });
+    await prisma.dynamicLike.deleteMany({
+      where: {
+        OR: [
+          { userId: { in: normalUserIds } },
+          { dynamic: { userId: { in: normalUserIds } } },
+        ],
+      },
+    });
+    await prisma.dynamicComment.deleteMany({
+      where: {
+        OR: [
+          { userId: { in: normalUserIds } },
+          { dynamic: { userId: { in: normalUserIds } } },
+        ],
+      },
+    });
+    await prisma.dynamicPollOption.deleteMany({
+      where: { dynamic: { userId: { in: normalUserIds } } },
+    });
+    await prisma.dynamic.deleteMany({
+      where: { userId: { in: normalUserIds } },
+    });
+
+    await prisma.report.deleteMany({
+      where: {
+        OR: [
+          { reporterId: { in: normalUserIds } },
+          { reportedId: { in: normalUserIds } },
+        ],
+      },
+    });
+    await prisma.userBlock.deleteMany({
+      where: {
+        OR: [
+          { blockerId: { in: normalUserIds } },
+          { blockedId: { in: normalUserIds } },
+        ],
+      },
+    });
+    await prisma.creditLog.deleteMany({
+      where: { userId: { in: normalUserIds } },
+    });
+    await prisma.creditScore.deleteMany({
+      where: { userId: { in: normalUserIds } },
+    });
+    await prisma.userProfile.deleteMany({
+      where: { userId: { in: normalUserIds } },
+    });
+    await prisma.user.deleteMany({
+      where: { id: { in: normalUserIds } },
+    });
+  }
 
   const hashedPassword = await hash('123456', 12);
 
-  // Create admin user
-  const admin = await prisma.user.create({
-    data: {
+  // Keep existing admin account if present; create one only when missing.
+  const admin = await prisma.user.upsert({
+    where: { email: 'admin@linksoul.com' },
+    update: {},
+    create: {
       email: 'admin@linksoul.com',
       phone: '13800000000',
       nickname: '管理员',
@@ -179,9 +381,9 @@ async function main() {
       creditScore: { create: { score: 0, level: 'BRONZE' } },
     },
   });
-  console.log(`  Created admin: ${admin.nickname} (${admin.email})`);
+  console.log(`  Kept admin: ${admin.nickname} (${admin.email})`);
 
-  const createdUsers: any[] = [];
+  const createdUsers: SeedUser[] = [];
 
   for (const u of users) {
     const { profile, ...userData } = u;
@@ -319,11 +521,145 @@ async function main() {
     });
   }
 
+  // Generate richer feed demo data
+  const createdDynamics: CreatedDynamic[] = [];
+  let pollDynamics = 0;
+  for (let i = 0; i < DYNAMIC_TOTAL; i += 1) {
+    const author = pickOne(createdUsers);
+    const pollPack = chance(0.22) ? pickOne(POLL_POOL) : null;
+    const pollOptions = pollPack
+      ? shuffle(pollPack.slice(1)).slice(0, randInt(2, Math.min(4, pollPack.length - 1)))
+      : [];
+    const mediaList: Array<{ type: 'image' | 'video'; url: string }> = [];
+    if (chance(0.58)) {
+      const mediaCount = randInt(1, 4);
+      for (let m = 0; m < mediaCount; m += 1) {
+        const isVideo = chance(0.2);
+        mediaList.push({
+          type: isVideo ? 'video' : 'image',
+          url: isVideo ? pickOne(VIDEO_POOL) : pickOne(IMAGE_POOL),
+        });
+      }
+    }
+    const firstImage = mediaList.find((m) => m.type === 'image')?.url || null;
+    const createdAt = new Date(Date.now() - randInt(0, 45 * 24 * 3600 * 1000));
+    const baseContent = pickOne(PULSE_TEXT_POOL);
+    const tag = pickOne(['#日常', '#状态更新', '#同频交流', '#晚安频道', '#成长日志']);
+    const content = pollPack
+      ? `${baseContent}\n📊 ${pollPack[0]}？\n${tag}`
+      : `${baseContent}\n${tag}`;
+
+    const dynamic = await prisma.dynamic.create({
+      data: {
+        userId: author.id,
+        type: chance(0.86)
+          ? 'post'
+          : pickOne(['checkin', 'test', 'match', 'system']),
+        content,
+        imageUrl: firstImage,
+        mediaList: mediaList.length ? JSON.stringify(mediaList) : null,
+        mood: pickOne(MOODS) as string | null,
+        music: chance(0.33) ? pickOne(MUSIC_POOL) : null,
+        location: chance(0.4) ? pickOne(LOCATION_POOL) : null,
+        link: chance(0.15) ? pickOne(LINK_POOL) : null,
+        visibility: chance(0.9) ? 'public' : chance(0.5) ? 'friends' : 'private',
+        createdAt,
+        pollOptions: pollOptions.length
+          ? {
+              create: pollOptions.map((text, idx) => ({
+                text,
+                sortOrder: idx,
+              })),
+            }
+          : undefined,
+      },
+      include: { pollOptions: true },
+    });
+
+    if (dynamic.pollOptions.length > 0) {
+      pollDynamics += 1;
+    }
+    createdDynamics.push({
+      id: dynamic.id,
+      userId: dynamic.userId,
+      createdAt,
+      pollOptionIds: dynamic.pollOptions.map((o) => o.id),
+    });
+  }
+
+  let totalLikes = 0;
+  let totalComments = 0;
+  let totalPollVotes = 0;
+  for (const dynamic of createdDynamics) {
+    const others = createdUsers.filter((u) => u.id !== dynamic.userId);
+
+    const likeCount = chance(0.7) ? randInt(0, Math.min(10, others.length)) : 0;
+    const likeUsers = shuffle(others).slice(0, likeCount);
+    if (likeUsers.length > 0) {
+      await prisma.dynamicLike.createMany({
+        data: likeUsers.map((u) => ({
+          dynamicId: dynamic.id,
+          userId: u.id,
+        })),
+      });
+    }
+    await prisma.dynamic.update({
+      where: { id: dynamic.id },
+      data: { likes: likeUsers.length },
+    });
+    totalLikes += likeUsers.length;
+
+    const commentCount = chance(0.68) ? randInt(0, 5) : 0;
+    if (commentCount > 0) {
+      await prisma.dynamicComment.createMany({
+        data: Array.from({ length: commentCount }).map((_, idx) => {
+          const commenter = pickOne(others);
+          return {
+            dynamicId: dynamic.id,
+            userId: commenter.id,
+            content: pickOne(COMMENT_POOL),
+            createdAt: new Date(dynamic.createdAt.getTime() + (idx + 1) * 3600 * 1000),
+          };
+        }),
+      });
+      totalComments += commentCount;
+    }
+
+    if (dynamic.pollOptionIds.length >= 2 && others.length > 0) {
+      const voteUsers = shuffle(others).slice(0, randInt(1, Math.min(8, others.length)));
+      const optionCountMap = new Map<string, number>();
+      const voteRows = voteUsers.map((u) => {
+        const optionId = pickOne(dynamic.pollOptionIds);
+        optionCountMap.set(optionId, (optionCountMap.get(optionId) || 0) + 1);
+        return {
+          dynamicId: dynamic.id,
+          optionId,
+          userId: u.id,
+        };
+      });
+      await prisma.dynamicPollVote.createMany({ data: voteRows });
+      await Promise.all(
+        Array.from(optionCountMap.entries()).map(([optionId, votes]) =>
+          prisma.dynamicPollOption.update({
+            where: { id: optionId },
+            data: { votes },
+          }),
+        ),
+      );
+      totalPollVotes += voteRows.length;
+    }
+  }
+
   console.log('\nSeed completed!');
   console.log(`  ${createdUsers.length} users`);
   console.log(`  ${createdMatches.length} matches`);
   console.log(`  ${acceptedMatches.length} conversations with messages`);
   console.log(`  2 relationships`);
+  console.log(`  ${createdDynamics.length} dynamics`);
+  console.log(`  ${pollDynamics} poll dynamics`);
+  console.log(`  ${totalLikes} likes`);
+  console.log(`  ${totalComments} comments`);
+  console.log(`  ${totalPollVotes} poll votes`);
   console.log('\nAdmin account (password: 123456):');
   console.log('  管理员     admin@linksoul.com');
   console.log('\nTest accounts (password: 123456):');

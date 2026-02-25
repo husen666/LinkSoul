@@ -29,6 +29,27 @@ export class AiController {
     );
   }
 
+  @Post('play-plans')
+  @ApiOperation({
+    summary: 'Play Planner — 按关系阶段生成可执行玩法方案',
+  })
+  getPlayPlans(
+    @Body()
+    body: {
+      mode: string;
+      instruction: string;
+      userProfile?: any;
+      relationshipStage?: string;
+    },
+  ) {
+    return this.aiService.getPlayPlans(
+      body.mode,
+      body.instruction,
+      body.relationshipStage || 'INITIAL',
+      body.userProfile || {},
+    );
+  }
+
   @Post('match-analysis')
   @ApiOperation({
     summary: 'Match Agent — 画像分析→兼容性评估(R1)→匹配理由',

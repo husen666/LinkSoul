@@ -5,10 +5,12 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.service';
+import { pickRandomAvatarFromBatch } from '../../common/utils/avatar.util';
 
 interface CandidateProfile {
   attachmentType?: string | null;
   personalityTags?: string | null;
+  soulGallery?: string | null;
 }
 
 interface CandidateUser {
@@ -32,6 +34,14 @@ export interface MatchRecommendation {
   age: number | null;
   score: number;
   matchReason: string;
+  soulMedia?: {
+    url: string;
+    type: 'image' | 'video';
+  } | null;
+  soulGallery?: Array<{
+    url: string;
+    type: 'image' | 'video';
+  }>;
 }
 
 @Injectable()
@@ -41,8 +51,74 @@ export class MatchesService {
     private redis: RedisService,
   ) {}
 
+  private parseSoulMedia(raw?: string | null) {
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed) || parsed.length === 0) return null;
+      const first = parsed[0] as any;
+      if (typeof first === 'string') {
+        return {
+          url: first,
+          type: /\.(mp4|mov|m4v|webm|avi|mkv)(\?|$)/i.test(first) ? 'video' : 'image',
+        } as const;
+      }
+      if (first && typeof first === 'object' && typeof first.url === 'string') {
+        const url = first.url;
+        const mimeType = typeof first.mimeType === 'string' ? first.mimeType : '';
+        const type: 'image' | 'video' =
+          first.type === 'video' ||
+          mimeType.startsWith('video/') ||
+          /\.(mp4|mov|m4v|webm|avi|mkv)(\?|$)/i.test(url)
+            ? 'video'
+            : 'image';
+        return { url, type } as const;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private parseSoulGallery(raw?: string | null) {
+    if (!raw) return [] as Array<{ url: string; type: 'image' | 'video' }>;
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((item) => {
+          if (typeof item === 'string') {
+            return {
+              url: item,
+              type: /\.(mp4|mov|m4v|webm|avi|mkv)(\?|$)/i.test(item)
+                ? 'video'
+                : 'image',
+            } as const;
+          }
+          if (item && typeof item === 'object' && typeof (item as any).url === 'string') {
+            const row = item as any;
+            const url = row.url as string;
+            const mimeType =
+              typeof row.mimeType === 'string' ? (row.mimeType as string) : '';
+            const type: 'image' | 'video' =
+              row.type === 'video' ||
+              mimeType.startsWith('video/') ||
+              /\.(mp4|mov|m4v|webm|avi|mkv)(\?|$)/i.test(url)
+                ? 'video'
+                : 'image';
+            return { url, type } as const;
+          }
+          return null;
+        })
+        .filter((i): i is { url: string; type: 'image' | 'video' } => !!i)
+        .slice(0, 6);
+    } catch {
+      return [];
+    }
+  }
+
   async getDailyRecommendations(userId: string) {
-    const cacheKey = `match:daily:${userId}`;
+    const cacheKey = `match:daily:v5:${userId}`;
     const cached = await this.redis.getJson<MatchRecommendation[]>(cacheKey);
     if (cached) return cached;
 
@@ -53,9 +129,13 @@ export class MatchesService {
     if (!user) throw new NotFoundException('User not found');
 
     // MVP: basic matching using profile attributes
+    const blockedUserIds = await this.getBlockedUserIds(userId);
     const candidates = await this.prisma.user.findMany({
       where: {
-        id: { not: userId },
+        id:
+          blockedUserIds.length > 0
+            ? { notIn: [userId, ...blockedUserIds] }
+            : { not: userId },
         status: 'ACTIVE',
         profile: { testCompleted: true },
       },
@@ -66,7 +146,9 @@ export class MatchesService {
     const recommendations = candidates.map((candidate) => ({
       userId: candidate.id,
       nickname: candidate.nickname,
-      avatar: candidate.avatar,
+      avatar:
+        candidate.avatar ||
+        pickRandomAvatarFromBatch(candidate.nickname || 'LinkSoul'),
       gender: candidate.gender,
       bio: candidate.bio,
       city: candidate.city,
@@ -75,6 +157,8 @@ export class MatchesService {
         : null,
       score: this.calculateMatchScore(user, candidate),
       matchReason: this.generateMatchReason(user, candidate),
+      soulMedia: this.parseSoulMedia(candidate.profile?.soulGallery),
+      soulGallery: this.parseSoulGallery(candidate.profile?.soulGallery),
     }));
 
     recommendations.sort((a, b) => b.score - a.score);
@@ -84,9 +168,93 @@ export class MatchesService {
     return recommendations;
   }
 
+  async getInteractionStatus(userId: string, targetUserId: string) {
+    if (!targetUserId || userId === targetUserId) {
+      return {
+        targetUserId,
+        pairStatus: null as 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'EXPIRED' | null,
+        hasInteracted: false,
+        myAction: null as 'super-accept' | 'accept' | 'reject' | null,
+        source: 'none' as 'self' | 'other' | 'none',
+      };
+    }
+
+    const [selfRecord, otherRecord] = await Promise.all([
+      this.prisma.match.findUnique({
+        where: {
+          userAId_userBId: {
+            userAId: userId,
+            userBId: targetUserId,
+          },
+        },
+        select: {
+          status: true,
+          matchReason: true,
+          updatedAt: true,
+        },
+      }),
+      this.prisma.match.findUnique({
+        where: {
+          userAId_userBId: {
+            userAId: targetUserId,
+            userBId: userId,
+          },
+        },
+        select: {
+          status: true,
+          matchReason: true,
+          updatedAt: true,
+        },
+      }),
+    ]);
+
+    if (selfRecord) {
+      const myAction: 'super-accept' | 'accept' | 'reject' | null =
+        selfRecord.status === 'REJECTED'
+          ? 'reject'
+          : selfRecord.status === 'ACCEPTED'
+            ? /共振|super/i.test(selfRecord.matchReason || '')
+              ? 'super-accept'
+              : 'accept'
+            : selfRecord.status === 'PENDING'
+              ? 'accept'
+              : null;
+      return {
+        targetUserId,
+        pairStatus: selfRecord.status,
+        hasInteracted: true,
+        myAction,
+        source: 'self' as const,
+        updatedAt: selfRecord.updatedAt,
+      };
+    }
+
+    if (otherRecord) {
+      return {
+        targetUserId,
+        pairStatus: otherRecord.status,
+        hasInteracted: false,
+        myAction: null as 'super-accept' | 'accept' | 'reject' | null,
+        source: 'other' as const,
+        updatedAt: otherRecord.updatedAt,
+      };
+    }
+
+    return {
+      targetUserId,
+      pairStatus: null as 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'EXPIRED' | null,
+      hasInteracted: false,
+      myAction: null as 'super-accept' | 'accept' | 'reject' | null,
+      source: 'none' as const,
+    };
+  }
+
   async acceptMatch(userId: string, targetUserId: string, superLike = false) {
     if (userId === targetUserId) {
       throw new ForbiddenException('不能与自己匹配');
+    }
+    if (await this.isBlockedEither(userId, targetUserId)) {
+      throw new ForbiddenException('你与对方存在拉黑关系，无法继续互动');
     }
 
     const existingMatch = await this.prisma.match.findFirst({
@@ -167,6 +335,9 @@ export class MatchesService {
   }
 
   async rejectMatch(userId: string, targetUserId: string) {
+    if (await this.isBlockedEither(userId, targetUserId)) {
+      return { message: '双方存在拉黑关系，已忽略该匹配请求' };
+    }
     const match = await this.prisma.match.findFirst({
       where: {
         OR: [
@@ -187,6 +358,7 @@ export class MatchesService {
   }
 
   async getMyMatches(userId: string) {
+    const blockedUserIds = await this.getBlockedUserIds(userId);
     const rows = await this.prisma.match.findMany({
       where: {
         OR: [{ userAId: userId }, { userBId: userId }],
@@ -209,6 +381,7 @@ export class MatchesService {
 
     for (const row of rows) {
       const otherId = row.userAId === userId ? row.userBId : row.userAId;
+      if (blockedUserIds.includes(otherId)) continue;
       const prev = bestByOther.get(otherId);
       if (!prev) {
         bestByOther.set(otherId, row);
@@ -399,5 +572,29 @@ export class MatchesService {
     } catch {
       return [];
     }
+  }
+
+  private async getBlockedUserIds(userId: string): Promise<string[]> {
+    const rows = await this.prisma.userBlock.findMany({
+      where: {
+        OR: [{ blockerId: userId }, { blockedId: userId }],
+      },
+      select: { blockerId: true, blockedId: true },
+    });
+    return rows.map((row) =>
+      row.blockerId === userId ? row.blockedId : row.blockerId,
+    );
+  }
+
+  private async isBlockedEither(userAId: string, userBId: string): Promise<boolean> {
+    const count = await this.prisma.userBlock.count({
+      where: {
+        OR: [
+          { blockerId: userAId, blockedId: userBId },
+          { blockerId: userBId, blockedId: userAId },
+        ],
+      },
+    });
+    return count > 0;
   }
 }

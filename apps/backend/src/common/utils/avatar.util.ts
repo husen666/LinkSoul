@@ -1,5 +1,58 @@
 export const AVATAR_STYLES = ['MINIMAL', 'PLANET', 'CYBER'] as const;
 export type AvatarStyle = (typeof AVATAR_STYLES)[number];
+export const AVATAR_POOL_MIN = 1;
+export const AVATAR_POOL_MAX = 24;
+export const DEFAULT_AVATAR_POOL_PER_STYLE = 8;
+export const DEFAULT_MANAGED_AVATAR_COUNT = 1000;
+export const MAX_MANAGED_AVATAR_COUNT = 5000;
+let avatarPoolPerStyleOverride: number | null = null;
+let managedDefaultAvatarPool: Array<{
+  id: string;
+  avatar: string;
+  style: AvatarStyle;
+  seed: string;
+}> = [];
+let managedDefaultAvatarUpdatedAt: string | null = null;
+
+function parsePoolSize(rawValue: string | undefined, fallback: number) {
+  const parsed = Number.parseInt(String(rawValue || ''), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(AVATAR_POOL_MAX, Math.max(AVATAR_POOL_MIN, parsed));
+}
+
+function resolveAvatarPoolPerStyle() {
+  if (avatarPoolPerStyleOverride != null) return avatarPoolPerStyleOverride;
+  return parsePoolSize(
+    process.env.AVATAR_POOL_PER_STYLE,
+    DEFAULT_AVATAR_POOL_PER_STYLE,
+  );
+}
+
+export function getAvatarPoolConfig() {
+  const rawValue = process.env.AVATAR_POOL_PER_STYLE;
+  return {
+    rawValue: rawValue ?? '',
+    perStyle: resolveAvatarPoolPerStyle(),
+    overridePerStyle: avatarPoolPerStyleOverride,
+    source: avatarPoolPerStyleOverride != null ? 'runtime' : 'env',
+    min: AVATAR_POOL_MIN,
+    max: AVATAR_POOL_MAX,
+    styles: [...AVATAR_STYLES],
+  };
+}
+
+export function setAvatarPoolPerStyle(perStyle: number) {
+  avatarPoolPerStyleOverride = parsePoolSize(
+    String(perStyle),
+    DEFAULT_AVATAR_POOL_PER_STYLE,
+  );
+  return getAvatarPoolConfig();
+}
+
+export function resetAvatarPoolPerStyle() {
+  avatarPoolPerStyleOverride = null;
+  return getAvatarPoolConfig();
+}
 
 function escapeSvgText(input: string) {
   return input
@@ -46,7 +99,10 @@ export function generateAvatarBatch(
     styles?: AvatarStyle[];
   },
 ) {
-  const perStyle = Math.max(1, options?.perStyle ?? 4);
+  const perStyle = parsePoolSize(
+    options?.perStyle != null ? String(options.perStyle) : undefined,
+    resolveAvatarPoolPerStyle(),
+  );
   const styles = options?.styles?.length
     ? options.styles
     : [...AVATAR_STYLES];
@@ -73,3 +129,84 @@ export function pickRandomAvatarFromBatch(
   const idx = Math.floor(Math.random() * pool.length);
   return pool[idx];
 }
+
+function clampManagedAvatarCount(input?: number) {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed)) return DEFAULT_MANAGED_AVATAR_COUNT;
+  return Math.min(MAX_MANAGED_AVATAR_COUNT, Math.max(1, Math.floor(parsed)));
+}
+
+export function generateManagedDefaultAvatarPool(count = DEFAULT_MANAGED_AVATAR_COUNT) {
+  const targetCount = clampManagedAvatarCount(count);
+  const baseSeed = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const pool: Array<{
+    id: string;
+    avatar: string;
+    style: AvatarStyle;
+    seed: string;
+  }> = [];
+
+  for (let i = 0; i < targetCount; i++) {
+    const style = AVATAR_STYLES[i % AVATAR_STYLES.length];
+    const seed = `LS-${baseSeed}-${i + 1}-${Math.floor(Math.random() * 100000)}`;
+    pool.push({
+      id: `default-${i + 1}`,
+      avatar: generateDefaultAvatar(seed, style),
+      style,
+      seed,
+    });
+  }
+
+  managedDefaultAvatarPool = pool;
+  managedDefaultAvatarUpdatedAt = new Date().toISOString();
+  return getManagedDefaultAvatarPoolInfo();
+}
+
+function ensureManagedDefaultAvatarPool() {
+  if (managedDefaultAvatarPool.length === 0) {
+    generateManagedDefaultAvatarPool(DEFAULT_MANAGED_AVATAR_COUNT);
+  }
+}
+
+export function getManagedDefaultAvatarPoolInfo() {
+  ensureManagedDefaultAvatarPool();
+  return {
+    count: managedDefaultAvatarPool.length,
+    updatedAt: managedDefaultAvatarUpdatedAt,
+    defaultCount: DEFAULT_MANAGED_AVATAR_COUNT,
+    maxCount: MAX_MANAGED_AVATAR_COUNT,
+    styleCounts: AVATAR_STYLES.reduce(
+      (acc, style) => {
+        acc[style] = managedDefaultAvatarPool.filter((item) => item.style === style).length;
+        return acc;
+      },
+      {} as Record<AvatarStyle, number>,
+    ),
+    preview: managedDefaultAvatarPool.slice(0, 20).map((item) => ({
+      id: item.id,
+      style: item.style,
+      avatar: item.avatar,
+    })),
+  };
+}
+
+export function pickRandomManagedDefaultAvatar(options?: {
+  styles?: AvatarStyle[];
+  excludeAvatar?: string;
+}) {
+  ensureManagedDefaultAvatarPool();
+  const styles = options?.styles?.length ? options.styles : undefined;
+  const exclude = String(options?.excludeAvatar || '').trim();
+  const filtered = managedDefaultAvatarPool.filter((item) => {
+    if (styles && !styles.includes(item.style)) return false;
+    if (exclude && item.avatar === exclude) return false;
+    return true;
+  });
+  const pool = filtered.length > 0 ? filtered : managedDefaultAvatarPool;
+  if (pool.length === 0) return null;
+  const idx = Math.floor(Math.random() * pool.length);
+  return pool[idx].avatar;
+}
+
+// Warm up managed default avatar pool at startup.
+ensureManagedDefaultAvatarPool();

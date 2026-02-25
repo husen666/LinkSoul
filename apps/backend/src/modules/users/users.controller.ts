@@ -3,6 +3,7 @@ import {
   Get,
   Put,
   Post,
+  Delete,
   Body,
   UseGuards,
   Param,
@@ -51,6 +52,19 @@ export class UsersController {
   @ApiOperation({ summary: '每日签到' })
   dailyCheckin(@CurrentUser('id') userId: string) {
     return this.usersService.dailyCheckin(userId);
+  }
+
+  @Post('me/avatar/random')
+  @ApiOperation({ summary: '随机获取默认头像' })
+  randomDefaultAvatar(
+    @CurrentUser('id') userId: string,
+    @Body() body: { currentAvatar?: string; style?: string },
+  ) {
+    return this.usersService.getRandomDefaultAvatar(
+      userId,
+      body?.currentAvatar,
+      body?.style,
+    );
   }
 
   @Get('op-messages')
@@ -123,6 +137,30 @@ export class UsersController {
       body.reason,
       body.detail,
     );
+  }
+
+  @Post('me/block')
+  @ApiOperation({ summary: '拉黑用户' })
+  blockUser(
+    @CurrentUser('id') userId: string,
+    @Body() body: { targetUserId: string; reason?: string },
+  ) {
+    return this.usersService.blockUser(userId, body.targetUserId, body.reason);
+  }
+
+  @Delete('me/block/:targetUserId')
+  @ApiOperation({ summary: '取消拉黑用户' })
+  unblockUser(
+    @CurrentUser('id') userId: string,
+    @Param('targetUserId') targetUserId: string,
+  ) {
+    return this.usersService.unblockUser(userId, targetUserId);
+  }
+
+  @Get('me/blocks')
+  @ApiOperation({ summary: '获取我拉黑的用户列表' })
+  getMyBlocks(@CurrentUser('id') userId: string) {
+    return this.usersService.getMyBlocks(userId);
   }
 
   private getPersonalityQuestionsData() {

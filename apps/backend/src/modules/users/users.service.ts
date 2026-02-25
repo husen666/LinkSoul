@@ -5,19 +5,33 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { RedisService } from '../../common/redis/redis.service';
 import {
   UpdateProfileDto,
   UpdatePsychProfileDto,
 } from './dto/update-profile.dto';
 import { hash, compare } from 'bcryptjs';
-import { pickRandomAvatarFromBatch } from '../../common/utils/avatar.util';
+import {
+  generateAvatarBatch,
+  pickRandomManagedDefaultAvatar,
+  pickRandomAvatarFromBatch,
+  type AvatarStyle,
+} from '../../common/utils/avatar.util';
 
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:8000';
+
+type SoulGalleryItem = {
+  url: string;
+  type: 'image' | 'video';
+  mimeType?: string;
+};
 
 @Injectable()
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
-  private static readonly PROFILE_COMPLETE_FIELDS: (keyof UpdateProfileDto)[] = [
+  private static readonly PROFILE_COMPLETE_FIELDS: Array<
+    'gender' | 'birthDate' | 'city' | 'province' | 'bio'
+  > = [
     'gender',
     'birthDate',
     'city',
@@ -25,7 +39,98 @@ export class UsersService {
     'bio',
   ];
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private redis: RedisService,
+  ) {}
+
+  private inferMediaType(url: string, mimeType?: string): 'image' | 'video' {
+    const mime = String(mimeType || '').toLowerCase();
+    if (mime.startsWith('video/')) return 'video';
+    if (mime.startsWith('image/')) return 'image';
+    if (/\.(mp4|mov|m4v|webm|avi|mkv)(\?|$)/i.test(url)) return 'video';
+    return 'image';
+  }
+
+  private normalizeSoulGallery(items?: unknown[]): SoulGalleryItem[] {
+    if (!Array.isArray(items)) return [];
+    const out: SoulGalleryItem[] = [];
+    for (const item of items.slice(0, 12)) {
+      if (typeof item === 'string') {
+        const url = item.trim();
+        if (!url) continue;
+        out.push({ url, type: this.inferMediaType(url) });
+        continue;
+      }
+      if (item && typeof item === 'object') {
+        const raw = item as Record<string, unknown>;
+        const url = typeof raw.url === 'string' ? raw.url.trim() : '';
+        if (!url) continue;
+        const mimeType = typeof raw.mimeType === 'string' ? raw.mimeType : undefined;
+        const normalizedType =
+          raw.type === 'video' || raw.type === 'image'
+            ? raw.type
+            : this.inferMediaType(url, mimeType);
+        out.push({
+          url,
+          type: normalizedType,
+          mimeType,
+        });
+      }
+    }
+    return out;
+  }
+
+  private parseSoulGallery(raw?: string | null): SoulGalleryItem[] {
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return this.normalizeSoulGallery(parsed);
+    } catch {
+      return [];
+    }
+  }
+
+  private mapAvatarStyle(style?: string): AvatarStyle[] | undefined {
+    if (!style) return undefined;
+    const normalized = style.trim().toLowerCase();
+    if (normalized === 'minimal') return ['MINIMAL'];
+    if (normalized === 'planet') return ['PLANET'];
+    if (normalized === 'cyber') return ['CYBER'];
+    return undefined;
+  }
+
+  async getRandomDefaultAvatar(
+    userId: string,
+    currentAvatar?: string,
+    style?: string,
+  ) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, nickname: true },
+    });
+    if (!user) throw new NotFoundException('用户不存在');
+
+    const pool = generateAvatarBatch(user.nickname || 'LinkSoul', {
+      styles: this.mapAvatarStyle(style),
+    });
+    const trimmedCurrent = String(currentAvatar || '').trim();
+    const managedAvatar = pickRandomManagedDefaultAvatar({
+      styles: this.mapAvatarStyle(style),
+      excludeAvatar: trimmedCurrent || undefined,
+    });
+    if (managedAvatar) {
+      return { avatar: managedAvatar };
+    }
+    const candidates = trimmedCurrent
+      ? pool.filter((item) => item !== trimmedCurrent)
+      : pool;
+    const selectedPool = candidates.length > 0 ? candidates : pool;
+    const avatar =
+      selectedPool[Math.floor(Math.random() * selectedPool.length)] ||
+      pickRandomAvatarFromBatch(user.nickname || 'LinkSoul');
+    return { avatar };
+  }
 
   private async awardCreditOnce(
     userId: string,
@@ -242,6 +347,7 @@ export class UsersService {
             attachmentType: true,
             communicationStyle: true,
             personalityTags: true,
+            soulGallery: true,
             valuesVector: true,
             aiSummary: true,
             testCompleted: true,
@@ -256,9 +362,7 @@ export class UsersService {
     if (!user) throw new NotFoundException('User not found');
     let ensuredAvatar = user.avatar;
     if (!ensuredAvatar) {
-      ensuredAvatar = pickRandomAvatarFromBatch(user.nickname || 'LinkSoul', {
-        perStyle: 4,
-      });
+      ensuredAvatar = pickRandomAvatarFromBatch(user.nickname || 'LinkSoul');
       await this.prisma.user.update({
         where: { id: userId },
         data: { avatar: ensuredAvatar },
@@ -275,6 +379,12 @@ export class UsersService {
       return {
         ...user,
         avatar: ensuredAvatar,
+        profile: user.profile
+          ? {
+              ...user.profile,
+              soulGallery: this.parseSoulGallery(user.profile.soulGallery),
+            }
+          : user.profile,
         creditScore: {
           ...user.creditScore,
           level: correctLevel,
@@ -285,6 +395,12 @@ export class UsersService {
     return {
       ...user,
       avatar: ensuredAvatar,
+      profile: user.profile
+        ? {
+            ...user.profile,
+            soulGallery: this.parseSoulGallery(user.profile.soulGallery),
+          }
+        : user.profile,
     };
   }
 
@@ -325,6 +441,20 @@ export class UsersService {
     });
     if (profileCompleted) {
       await this.awardCreditOnce(userId, 'COMPLETE_PROFILE', 10, '完善个人资料');
+    }
+
+    if (has('soulGallery')) {
+      const normalizedGallery = this.normalizeSoulGallery(dto.soulGallery as unknown[]);
+      await this.prisma.userProfile.upsert({
+        where: { userId },
+        update: {
+          soulGallery: JSON.stringify(normalizedGallery),
+        },
+        create: {
+          userId,
+          soulGallery: JSON.stringify(normalizedGallery),
+        },
+      });
     }
 
     return updated;
@@ -506,5 +636,101 @@ export class UsersService {
     return this.prisma.report.create({
       data: { reporterId, reportedId, reason, detail: detail || null },
     });
+  }
+
+  async blockUser(blockerId: string, targetUserId: string, reason?: string) {
+    if (blockerId === targetUserId) {
+      throw new BadRequestException('不能拉黑自己');
+    }
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { id: true, nickname: true },
+    });
+    if (!target) throw new NotFoundException('用户不存在');
+
+    await this.prisma.userBlock.upsert({
+      where: {
+        blockerId_blockedId: {
+          blockerId,
+          blockedId: targetUserId,
+        },
+      },
+      update: {
+        reason: reason?.trim() || null,
+      },
+      create: {
+        blockerId,
+        blockedId: targetUserId,
+        reason: reason?.trim() || null,
+      },
+    });
+
+    const pairMatchWhere = {
+      OR: [
+        { userAId: blockerId, userBId: targetUserId },
+        { userAId: targetUserId, userBId: blockerId },
+      ],
+    };
+    await this.prisma.match.updateMany({
+      where: {
+        ...pairMatchWhere,
+        status: { in: ['PENDING', 'ACCEPTED'] },
+      },
+      data: { status: 'REJECTED' },
+    });
+    await this.prisma.conversation.updateMany({
+      where: {
+        match: pairMatchWhere,
+      },
+      data: { status: 'ARCHIVED' },
+    });
+
+    await this.clearDailyMatchCache([blockerId, targetUserId]);
+    return { success: true, blockedUserId: targetUserId };
+  }
+
+  async unblockUser(blockerId: string, targetUserId: string) {
+    await this.prisma.userBlock.deleteMany({
+      where: {
+        blockerId,
+        blockedId: targetUserId,
+      },
+    });
+    await this.clearDailyMatchCache([blockerId, targetUserId]);
+    return { success: true, unblockedUserId: targetUserId };
+  }
+
+  async getMyBlocks(userId: string) {
+    const rows = await this.prisma.userBlock.findMany({
+      where: { blockerId: userId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        blocked: {
+          select: {
+            id: true,
+            nickname: true,
+            avatar: true,
+            city: true,
+            province: true,
+          },
+        },
+      },
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      reason: row.reason,
+      createdAt: row.createdAt,
+      user: row.blocked,
+    }));
+  }
+
+  private async clearDailyMatchCache(userIds: string[]) {
+    await Promise.all(
+      userIds.flatMap((id) => [
+        this.redis.del(`match:daily:v2:${id}`),
+        this.redis.del(`match:daily:v3:${id}`),
+        this.redis.del(`match:daily:v5:${id}`),
+      ]),
+    );
   }
 }
