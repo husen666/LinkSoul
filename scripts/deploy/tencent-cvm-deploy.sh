@@ -18,6 +18,9 @@ source "$ENV_FILE"
 set +a
 
 BASE_PATH="${PROJECT_BASE_PATH:-/linksoul}"
+LOCAL_HTTPS_PORT="${LOCAL_HTTPS_PORT:-8443}"
+HEALTHCHECK_HOST="${HEALTHCHECK_HOST:-${APP_DOMAIN}}"
+HEALTHCHECK_BASE_URL="${HEALTHCHECK_BASE_URL:-https://127.0.0.1:${LOCAL_HTTPS_PORT}}"
 
 echo "[deploy] Fetching latest code..."
 git fetch --all --prune
@@ -44,7 +47,7 @@ healthcheck() {
   local wait=5
   local i=1
   while [[ $i -le $retries ]]; do
-    if curl -fsS "$url" >/dev/null 2>&1; then
+    if curl -k -fsS -H "Host: ${HEALTHCHECK_HOST}" "$url" >/dev/null 2>&1; then
       echo "[deploy] $name is healthy: $url"
       return 0
     fi
@@ -56,8 +59,8 @@ healthcheck() {
 }
 
 echo "[deploy] Health checks..."
-healthcheck "https://${APP_DOMAIN}${BASE_PATH}/api/v1/health" "Backend API"
-healthcheck "https://${APP_DOMAIN}${BASE_PATH}/admin/" "Admin"
-healthcheck "https://${APP_DOMAIN}${BASE_PATH}/mobile/" "Mobile web entry"
+healthcheck "${HEALTHCHECK_BASE_URL}${BASE_PATH}/api/v1/health" "Backend API"
+healthcheck "${HEALTHCHECK_BASE_URL}${BASE_PATH}/admin/" "Admin"
+healthcheck "${HEALTHCHECK_BASE_URL}${BASE_PATH}/mobile/" "Mobile web entry"
 
 echo "[deploy] Deployment completed successfully."

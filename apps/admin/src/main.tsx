@@ -22,6 +22,11 @@ import { SoulSessionsPage } from './pages/SoulSessions';
 import { AuditLogPage } from './pages/AuditLog';
 import './index.css';
 
+function resolveBasename() {
+  const pathname = window.location.pathname;
+  return pathname.startsWith('/linksoul/mobile') ? '/linksoul/mobile' : '/linksoul/admin';
+}
+
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const [allowed, setAllowed] = useState<boolean | null>(null);
 
@@ -65,7 +70,7 @@ createRoot(document.getElementById('root')!).render(
     <ErrorBoundary>
       <ToastProvider>
         <ConfirmProvider>
-          <BrowserRouter basename={import.meta.env.BASE_URL}>
+          <BrowserRouter basename={resolveBasename()}>
             <Routes>
               <Route path="/login" element={<LoginPage />} />
               <Route path="/" element={<PrivateRoute><Layout /></PrivateRoute>}>

@@ -1,5 +1,5 @@
 App({
   globalData: {
-    webviewUrl: 'https://example.com/linksoul/mobile/',
+    webviewUrl: 'https://www.aineoo.com/linksoul/mobile/',
   },
 });

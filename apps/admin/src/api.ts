@@ -1,7 +1,15 @@
-const BASE = '/api/v1';
 const TIMEOUT_MS = 30_000;
 const ADMIN_KEY = 'admin_user';
-const LOGIN_PATH = `${import.meta.env.BASE_URL}login`;
+function resolveProjectBasePath() {
+  return window.location.pathname.startsWith('/linksoul/') ? '/linksoul' : '';
+}
+const BASE = `${resolveProjectBasePath()}/api/v1`;
+function resolveBasePath() {
+  return window.location.pathname.startsWith('/linksoul/mobile')
+    ? '/linksoul/mobile/'
+    : '/linksoul/admin/';
+}
+const LOGIN_PATH = `${resolveBasePath()}login`;
 const LOGIN_PATHNAME = new URL(LOGIN_PATH, window.location.origin).pathname;
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
